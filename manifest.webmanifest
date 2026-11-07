@@ -1,0 +1,14 @@
+{
+  "name": "Mediawo OS",
+  "short_name": "Mediawo OS",
+  "description": "Rechnungen, Kunden und Ablage für Mediawo",
+  "lang": "de",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#171514",
+  "theme_color": "#171514",
+  "icons": [
+    { "src": "img/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
