@@ -12,7 +12,7 @@
   const numIn = n => (Number(n) || 0).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false });
   const whenTxt = iso => { if (!iso) return ''; const d = new Date(iso), t = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }); return d.toDateString() === new Date().toDateString() ? 'heute ' + t : d.toLocaleDateString('de-DE') + ' ' + t; };
 
-  const S = { firma: null, kunden: [], leistungen: [], rechnungen: [], mahnungen: [], zahlungen: [], fixkosten: [], ausgaben: [], zOk: true, ui: { zAlle: false, aAlle: false }, view: 'start', draft: null, filter: { jahr: 'alle', status: 'alle' }, periode: { art: 'jahr', ref: today() } };
+  const S = { firma: null, kunden: [], leistungen: [], rechnungen: [], mahnungen: [], zahlungen: [], fixkosten: [], ausgaben: [], belegNeu: [], zOk: true, ui: { zAlle: false, aAlle: false, fAlle: false }, view: 'start', draft: null, filter: { jahr: 'alle', status: 'alle' }, periode: { art: 'jahr', ref: today() } };
 
   /* ---------- Hilfen ---------- */
   function toast(msg, err) { const t = $('#toast'); t.textContent = msg; t.className = err ? 'show err' : 'show'; clearTimeout(t._t); t._t = setTimeout(() => t.className = '', err ? 6000 : 2600); }
@@ -65,6 +65,7 @@
     Object.assign(S, { firma, kunden, leistungen, rechnungen, mahnungen });
     /* Zahlungen und Fixkosten gibt es erst nach 03_zahlungen_fixkosten.sql. Bis dahin: bezahlte Rechnungen als je eine Zahlung werten. */
     try { S.ausgaben = await DB.listAusgaben(); } catch (e) { console.warn('Ausgaben', e); S.ausgaben = []; }
+    belegeScannen();
     try { [S.zahlungen, S.fixkosten] = await Promise.all([DB.listZahlungen(), DB.listFixkosten()]); S.zOk = true; }
     catch (e) {
       console.warn('Zahlungen/Fixkosten', e); S.zOk = false; S.fixkosten = [];
@@ -98,6 +99,30 @@
     if (S.view === 'einstellungen') { const a = $('#ablagePanels'); if (a) a.innerHTML = ablagePanels(); }
     if (syncNochmal) { syncNochmal = false; ablageSync(); }
   }
+  /* ---------- Belege-Ordner: neue Dateien finden ---------- */
+  let scanLaeuft = false;
+  async function belegIgnoriert() { try { return new Set(await AB.kv('get', 'belegIgnoriert') || []); } catch (e) { return new Set(); } }
+  async function belegeScannen() {
+    if (AB.belege.state !== 'on' || scanLaeuft) { S.belegNeu = []; belegZaehler(); return; }
+    scanLaeuft = true;
+    try {
+      const [dateien, ign] = await Promise.all([AB.belege.dateien(MWBELEG.istBeleg), belegIgnoriert()]);
+      const bekannt = new Set(S.ausgaben.map(a => a.beleg_pfad).filter(Boolean));
+      S.belegNeu = dateien.filter(f => !bekannt.has(f.pfad) && !ign.has(f.pfad)).sort((a, b) => b.geaendert - a.geaendert);
+    } catch (e) { console.warn('Belege', e); }
+    scanLaeuft = false; belegZaehler();
+    if (S.view === 'ausgaben' && !dlg.open) viewAusgaben();
+    if (S.view === 'start' && !dlg.open) { const k = $('#belegHinweis'); if (k) k.innerHTML = belegHinweis(); }
+  }
+  function belegZaehler() {
+    const c = $('#navBelege'); if (c) { c.hidden = !S.belegNeu.length; c.textContent = S.belegNeu.length; c.title = S.belegNeu.length + ' neue Belege'; }
+    renderSide();
+  }
+  const belegHinweis = () => S.belegNeu.length ? `<button class="belegbox" data-beleg-pruefen><b>${S.belegNeu.length} ${S.belegNeu.length === 1 ? 'neuer Beleg' : 'neue Belege'}</b> im Ordner ${esc(AB.belege.name)}<span>Jetzt prüfen →</span></button>` : '';
+  let fokusTimer = null;
+  window.addEventListener('focus', () => { clearTimeout(fokusTimer); fokusTimer = setTimeout(() => { if (S.firma && !dlg.open) belegeScannen(); }, 600); });
+  document.addEventListener('click', e => { if (e.target.closest('[data-beleg-pruefen]')) belegePruefen(0); });
+
   function renderSide() {
     const box = $('#ablageBox'); if (!box) return;
     const P = AB.pdf, B = AB.backup, zeilen = [];
@@ -112,25 +137,26 @@
     };
     zeilen.push(z('PDF-Ablage', P.state, esc(P.name)));
     zeilen.push(z('Sicherung', B.state, syncLaeuft ? 'läuft …' : AB.letzteSicherung ? whenTxt(AB.letzteSicherung) : esc(B.name)));
+    zeilen.push(z('Belege', AB.belege.state, S.belegNeu.length ? S.belegNeu.length + ' neu' : esc(AB.belege.name)));
     if (fehlend) zeilen.push(`<div class="err">${fehlend} Belege nicht abgelegt</div>`);
-    const pause = P.state === 'needs-permission' || B.state === 'needs-permission';
+    const pause = [P, B, AB.belege].some(x => x.state === 'needs-permission');
     box.className = 'ablage' + (warn ? ' warn' : '');
     box.innerHTML = zeilen.join('') + (pause ? `<button class="btn small primary" data-ab="freigeben">Ordner freigeben</button>`
       : warn && AB.supported ? `<button class="btn small" data-go-settings>Einrichten</button>` : '');
   }
   async function ablageAktion(a) {
     const [was, ziel] = a.split(':');
-    const st = ziel === 'pdf' ? AB.pdf : ziel === 'backup' ? AB.backup : null;
-    if (was === 'waehlen' && await st.waehlen()) toast((ziel === 'pdf' ? 'PDF-Ordner' : 'Sicherungsordner') + ' gewählt: ' + st.name);
-    if (was === 'aus') { await st.aus(); toast(ziel === 'pdf' ? 'PDF-Ablage ausgeschaltet' : 'Automatische Sicherung ausgeschaltet'); }
-    if (was === 'freigeben') { let ok = false; for (const x of [AB.pdf, AB.backup]) if (x.state === 'needs-permission') ok = (await x.freigeben()) || ok; if (ok) toast('Ordner wieder freigegeben'); }
+    const st = ziel === 'pdf' ? AB.pdf : ziel === 'backup' ? AB.backup : ziel === 'belege' ? AB.belege : null;
+    if (was === 'waehlen' && await st.waehlen()) toast({ pdf: 'PDF-Ordner', backup: 'Sicherungsordner', belege: 'Belege-Ordner' }[ziel] + ' gewählt: ' + st.name);
+    if (was === 'aus') { await st.aus(); toast({ pdf: 'PDF-Ablage ausgeschaltet', backup: 'Automatische Sicherung ausgeschaltet', belege: 'Belege-Ordner getrennt' }[ziel]); }
+    if (was === 'freigeben') { let ok = false; for (const x of [AB.pdf, AB.backup, AB.belege]) if (x.state === 'needs-permission') ok = (await x.freigeben()) || ok; if (ok) toast('Ordner wieder freigegeben'); }
     if (was === 'download') {
       const json = JSON.stringify({ app: 'Mediawo OS', erstellt: new Date().toISOString(), ...sicherungsDaten() }, null, 2);
       download('Mediawo-Sicherung-' + today() + '.json', new Blob([json], { type: 'application/json' })); return;
     }
     if (was === 'jetzt') toast('Wird gesichert …');
     renderSide(); const a2 = $('#ablagePanels'); if (a2) a2.innerHTML = ablagePanels();
-    ablageSync();
+    ablageSync(); belegeScannen();
   }
   document.addEventListener('click', e => {
     const b = e.target.closest('[data-ab]'); if (b) ablageAktion(b.dataset.ab);
@@ -153,6 +179,10 @@
           'Wählen Sie einmal einen Ordner, am besten in Google Drive (z. B. „Mediawo_Buchhaltung/Rechnungen“). Danach legt die App jede Rechnung, Stornorechnung und Zahlungserinnerung dort automatisch als PDF ab, sortiert nach Jahr. Fehlende Belege werden beim Öffnen nachgeholt, auch die vom anderen Nutzer.',
           'PDFs werden automatisch im Ordner {n} abgelegt, sortiert nach Jahr.')}
         ${fehlend ? `<p class="note" style="margin-top:12px">${fehlend} Belege konnten nicht abgelegt werden.</p>` : ''}</div>
+      <div class="panel"><h2>Belege-Ordner (Ausgaben)</h2>
+        ${ordnerPanel(AB.belege, 'belege', 'Beispiel: {n}/' + j + '/Rechnung_Amazon.pdf',
+          'Wählen Sie den Ordner, in den ihr Belege und Eingangsrechnungen legt (z. B. „Mediawo_Buchhaltung/Belege“). Die App erkennt neue PDFs und Fotos, liest Betrag, Datum und Lieferant aus und schlägt sie als Ausgabe vor. Belege, die ihr in der App anhängt, landen ebenfalls dort.',
+          'Neue Belege im Ordner {n} werden beim Öffnen der App erkannt' + (S.belegNeu.length ? ` (gerade ${S.belegNeu.length} neu)` : '') + '.')}</div>
       <div class="panel"><h2>Datensicherung</h2>
         <p class="hint">Die Daten liegen in der Datenbank (Supabase). Zusätzlich schreibt die App nach jeder Änderung eine vollständige Sicherung in einen Ordner Ihrer Wahl. Pro Tag entsteht eine Datei, dazu immer eine aktuelle.</p>
         ${ordnerPanel(AB.backup, 'backup', 'Beispiel: {n}/Mediawo-Sicherung-' + today() + '.json',
@@ -448,6 +478,7 @@
     const j = heute.slice(0, 4), umsatzJ = r2(S.rechnungen.filter(r => r.datum.startsWith(j)).reduce((a, r) => a + Number(r.brutto), 0));
     const G = C.grenzeVorjahr, pct = Math.min(100, umsatzJ / G * 100), rest = G - umsatzJ, cls = pct >= 90 ? 'crit' : pct >= 70 ? 'warn' : '';
     const laeuft = imZeitraum(heute, pr.von, pr.bis);
+    const fl = S.fixkosten.filter(f => f.aktiv).map(f => ({ ...f, anteil: fm ? r2(fixMonat(f) * fix / fm) : 0 })).sort((x, y) => y.anteil - x.anteil);
     const kunde = id => { const r = S.rechnungen.find(x => x.id === id); return r ? r : {}; };
 
     $('#main').innerHTML = `
@@ -460,11 +491,11 @@
           ${laeuft ? '' : '<button class="btn small" data-p-heute>Heute</button>'}</div>
       </div>
       <div class="summary">
-        <div><span class="l">Eingegangen</span><span class="v">${eur(eingang)}</span><span class="s">${zs.length} ${zs.length === 1 ? 'Zahlung' : 'Zahlungen'} ${{ jahr: 'im Jahr', monat: 'im Monat', woche: 'in der Woche' }[pr.art]}</span></div>
-        <div><span class="l">Kosten</span><span class="v">${eur(kosten)}</span><span class="s">${eur(fix)} fix · ${eur(variabel)} Ausgaben</span></div>
+        <div><span class="l">Eingegangen</span><span class="v">${eur(eingang)}</span><span class="s">${zs.length} ${zs.length === 1 ? 'Zahlung' : 'Zahlungen'} · ${eur(umsatz)} in Rechnung gestellt</span></div>
+        <div><span class="l">Kosten gesamt</span><span class="v">${eur(kosten)}</span><span class="s">${eur(fix)} fix · ${eur(variabel)} variabel</span></div>
         <div class="${ergebnis < 0 ? 'alert' : ''}"><span class="l">${ergebnis < 0 ? 'Fehlt noch' : 'Ergebnis'}</span><span class="v ${ergebnis >= 0 ? 'ok' : ''}">${eur(Math.abs(ergebnis))}</span>
           <div class="bar ${deckung >= 100 ? '' : 'crit'}"><i style="width:${Math.min(100, deckung)}%"></i></div><span class="s">${kosten ? deckung + ' % der Kosten gedeckt' : 'Keine Kosten hinterlegt'}</span></div>
-        <div><span class="l">Rechnungsumsatz</span><span class="v">${eur(umsatz)}</span><span class="s">${rs.filter(r => r.typ === 'rechnung').length} Rechnungen geschrieben</span></div>
+        <div class="${ue.length ? 'alert' : ''}"><span class="l">Offen</span><span class="v">${eur(offenSum)}</span><span class="s">${offen.length} Rechnungen${ue.length ? ` · ${ue.length} überfällig` : ''}</span></div>
       </div>
       <div class="panel chart-panel">
         <div class="chart-head"><h2>Eingänge und Ausgaben ${pr.art === 'jahr' ? 'pro Monat' : pr.art === 'monat' ? 'pro Woche' : 'pro Tag'}</h2>
@@ -472,24 +503,28 @@
         <div id="chart" class="chart"></div>
         ${pr.art !== 'woche' ? `<p class="hint" style="margin:8px 0 0">Balken anklicken, um ${pr.art === 'jahr' ? 'den Monat' : 'die Woche'} zu öffnen. Jahresbeiträge (z. B. Versicherung) sind auf die Monate verteilt.</p>` : ''}
       </div>
-      <div class="cards2">
+      <div class="cards3">
         <div class="panel mini">
-          <div class="chart-head"><h2>Eingänge · ${esc(pr.titel)}</h2><span class="muted">${eur(eingang)}</span></div>
-          ${zs.length ? `<div class="mini-list">${(S.ui.zAlle ? zs : zs.slice(0, 3)).map(z => { const r = kunde(z.rechnung_id); return `<div><span class="d">${dDE(z.datum)}</span><span class="t">${esc(kundeName(r.kunde_snapshot))}<small>${esc(r.nummer || '')}${z.notiz ? ' · ' + esc(z.notiz) : ''}</small></span><b>${eur(z.betrag)}</b></div>`; }).join('')}</div>
+          <div class="chart-head"><h2>Eingänge</h2><span class="muted">${eur(eingang)}</span></div>
+          ${zs.length ? `<div class="mini-list">${(S.ui.zAlle ? zs : zs.slice(0, 3)).map(z => { const r = kunde(z.rechnung_id); return `<div><span class="d">${ddmm(z.datum)}</span><span class="t">${esc(kundeName(r.kunde_snapshot))}<small>${esc(r.nummer || '')}${z.notiz ? ' · ' + esc(z.notiz) : ''}</small></span><b>${eur(z.betrag)}</b></div>`; }).join('')}</div>
             ${zs.length > 3 ? `<button class="btn link small more" data-toggle="zAlle">${S.ui.zAlle ? 'Weniger anzeigen' : `Alle ${zs.length} anzeigen`}</button>` : ''}` : '<p class="empty small">Keine Zahlungseingänge in diesem Zeitraum.</p>'}
         </div>
         <div class="panel mini">
-          <div class="chart-head"><h2>Ausgaben · ${esc(pr.titel)}</h2><span class="muted">${eur(variabel)}</span></div>
-          ${as.length ? `<div class="mini-list">${(S.ui.aAlle ? as : as.slice(0, 3)).map(x => `<div class="click" data-aus-e="${x.id}"><span class="d">${dDE(x.datum)}</span><span class="t">${esc(x.lieferant)}<small>${esc([x.kategorie, x.beschreibung].filter(Boolean).join(' · '))}</small></span><b>${eur(x.betrag)}</b></div>`).join('')}</div>
+          <div class="chart-head"><h2>Fixkosten</h2><span class="muted">${eur(fix)}</span></div>
+          ${fl.length ? `<div class="mini-list">${(S.ui.fAlle ? fl : fl.slice(0, 3)).map(f => `<div class="nodate"><span class="t">${esc(f.anbieter)}<small>${esc(f.kategorie)} · ${eur(f.betrag)} ${{ monatlich: 'monatlich', quartalsweise: 'pro Quartal', 'jährlich': 'jährlich' }[f.intervall] || ''}</small></span><b>${eur(f.anteil)}</b></div>`).join('')}</div>
+            ${fl.length > 3 ? `<button class="btn link small more" data-toggle="fAlle">${S.ui.fAlle ? 'Weniger anzeigen' : `Alle ${fl.length} anzeigen`}</button>` : ''}` : '<p class="empty small">Keine Fixkosten hinterlegt.</p>'}
+          <button class="btn small" data-go-settings style="margin-top:12px">Fixkosten bearbeiten</button>
+        </div>
+        <div class="panel mini">
+          <div class="chart-head"><h2>Variable Ausgaben</h2><span class="muted">${eur(variabel)}</span></div>
+          <div id="belegHinweis">${belegHinweis()}</div>
+          ${as.length ? `<div class="mini-list">${(S.ui.aAlle ? as : as.slice(0, 3)).map(x => `<div class="click" data-aus-e="${x.id}"><span class="d">${ddmm(x.datum)}</span><span class="t">${esc(x.lieferant)}<small>${esc([x.kategorie, x.beschreibung].filter(Boolean).join(' · '))}</small></span><b>${eur(x.betrag)}</b></div>`).join('')}</div>
             ${as.length > 3 ? `<button class="btn link small more" data-toggle="aAlle">${S.ui.aAlle ? 'Weniger anzeigen' : `Alle ${as.length} anzeigen`}</button>` : ''}` : '<p class="empty small">Keine Ausgaben in diesem Zeitraum.</p>'}
           <button class="btn small" data-aus-neu style="margin-top:12px">+ Ausgabe</button>
         </div>
       </div>
-      <div class="summary two">
-        <div class="${ue.length ? 'alert' : ''}"><span class="l">Offen (alle Rechnungen)</span><span class="v">${eur(offenSum)}</span><span class="s">${offen.length} Rechnungen${ue.length ? ` · ${ue.length} überfällig (${eur(ueSum)})` : ''}</span></div>
-        <div><span class="l">Kleinunternehmergrenze ${j}</span><span class="v">${Math.round(pct)} %</span><div class="bar ${cls}"><i style="width:${pct}%"></i></div>
-          <span class="s">${rest > 0 ? `noch ${eur(rest)} bis ${eur(G)}` : `${eur(G)} überschritten`}</span></div>
-      </div>
+      <div class="panel grenze"><div><span class="l">Kleinunternehmergrenze ${j}</span><b>${Math.round(pct)} %</b></div><div class="bar ${cls}"><i style="width:${pct}%"></i></div>
+        <span class="s">Umsatz ${eur(umsatzJ)} · ${rest > 0 ? `noch ${eur(rest)} bis ${eur(G)}` : `${eur(G)} überschritten`}</span></div>
       ${pct >= 70 ? `<p class="note">Liegt der Umsatz ${j} über ${eur(G)}, gilt ab 1. Januar ${+j + 1} die Kleinunternehmerregelung nicht mehr. Über ${eur(C.grenzeLaufend)} im laufenden Jahr endet sie sofort. Rechtzeitig steuerlich klären und den Wechsel zu lexoffice planen.</p>` : ''}
       <h2 class="section">Offene Rechnungen</h2>
       ${offen.length ? rechnungTabelle([...offen].sort((a, b) => faellig(a).localeCompare(faellig(b)))) : '<div class="table-wrap"><p class="empty">Keine offenen Rechnungen.</p></div>'}`;
@@ -863,52 +898,172 @@
     $('#main').innerHTML = `
       <div class="head"><div><h1>Ausgaben</h1><p class="sub">Alles, was nicht regelmäßig anfällt: Einkäufe, Essen, Fahrten, Werbung. Fixkosten stehen unter Einstellungen.</p></div>
         <div class="btn-row"><button class="btn" id="aCsv">CSV für EÜR</button><button class="btn primary" data-aus-neu>Neue Ausgabe</button></div></div>
+      ${belegHinweis()}
+      ${AB.supported && AB.belege.state !== 'on' ? `<p class="hint">Tipp: Unter <a href="#" data-go-settings>Einstellungen</a> den Belege-Ordner in Drive verbinden. Dann erkennt die App neue Belege automatisch.</p>` : ''}
       <div class="toolbar"><select id="aJahr">${opt('alle', 'Alle Jahre', fj)}${jahre.map(j => opt(j, j, fj)).join('')}</select></div>
       ${Object.keys(proKat).length ? `<div class="chips"><button class="chip" data-kat="alle" aria-pressed="${fk === 'alle'}">Alle · ${eur(Object.values(proKat).reduce((a, b) => a + b, 0))}</button>${Object.entries(proKat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<button class="chip" data-kat="${esc(k)}" aria-pressed="${k === fk}">${esc(k)} · ${eur(v)}</button>`).join('')}</div>` : ''}
-      ${list.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Datum</th><th>Wofür</th><th>Kategorie</th><th class="num">Betrag</th><th></th></tr></thead><tbody>
-        ${list.map(a => `<tr><td class="nowrap">${dDE(a.datum)}</td><td>${esc(a.lieferant)}${a.beschreibung ? `<br><span class="muted">${esc(a.beschreibung)}</span>` : ''}</td><td>${esc(a.kategorie)}</td><td class="num">${eur(a.betrag)}</td>
+      ${list.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Datum</th><th>Wofür</th><th>Kategorie</th><th>Beleg</th><th class="num">Betrag</th><th></th></tr></thead><tbody>
+        ${list.map(a => `<tr><td class="nowrap">${dDE(a.datum)}</td><td>${esc(a.lieferant)}${a.beschreibung ? `<br><span class="muted">${esc(a.beschreibung)}</span>` : ''}</td><td>${esc(a.kategorie)}</td>
+          <td>${a.beleg_pfad ? `<button class="btn link small" data-beleg-open="${esc(a.beleg_pfad)}" title="${esc(a.beleg_pfad)}">Öffnen</button>` : '<span class="muted">–</span>'}</td><td class="num">${eur(a.betrag)}</td>
           <td><div class="btn-row end"><button class="btn small" data-aus-e="${a.id}">Bearbeiten</button><button class="btn small danger" data-aus-d="${a.id}">Löschen</button></div></td></tr>`).join('')}
-        </tbody><tfoot><tr><td colspan="3"><b>Summe</b></td><td class="num"><b>${eur(sum)}</b></td><td></td></tr></tfoot></table></div>` : '<div class="table-wrap"><p class="empty">Keine Ausgaben in diesem Zeitraum.</p></div>'}`;
+        </tbody><tfoot><tr><td colspan="4"><b>Summe</b></td><td class="num"><b>${eur(sum)}</b></td><td></td></tr></tfoot></table></div>` : '<div class="table-wrap"><p class="empty">Keine Ausgaben in diesem Zeitraum.</p></div>'}`;
     $('#aJahr').onchange = e => { S.filter.ausJahr = e.target.value; S.filter.ausKat = 'alle'; viewAusgaben(); };
     $('#aCsv').onclick = () => {
-      const rows = [['Datum', 'Lieferant', 'Beschreibung', 'Kategorie', 'Betrag']].concat([...list].reverse().map(a => [dDE(a.datum), a.lieferant, a.beschreibung || '', a.kategorie, numIn(a.betrag)]));
-      const csv = '\uFEFF' + rows.map(z => z.map(v => '"' + String(v ?? '').replace(/"/g, '""') + '"').join(';')).join('\r\n');
+      const rows = [['Datum', 'Lieferant', 'Beschreibung', 'Kategorie', 'Betrag', 'Beleg']].concat([...list].reverse().map(a => [dDE(a.datum), a.lieferant, a.beschreibung || '', a.kategorie, numIn(a.betrag), a.beleg_pfad || '']));
+      const csv = '﻿' + rows.map(z => z.map(v => '"' + String(v ?? '').replace(/"/g, '""') + '"').join(';')).join('\r\n');
       download('Mediawo_Ausgaben_' + today() + '.csv', new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     };
     $('#main').onclick = async e => {
+      if (e.target.closest('[data-go-settings]')) { e.preventDefault(); return; }
       const k = e.target.closest('[data-kat]'); if (k) { S.filter.ausKat = k.dataset.kat; return viewAusgaben(); }
       if (e.target.closest('[data-aus-neu]')) return ausgabeDlg(null, viewAusgaben);
       const ed = e.target.closest('[data-aus-e]'); if (ed) return ausgabeDlg(S.ausgaben.find(x => x.id === ed.dataset.ausE), viewAusgaben);
       const del = e.target.closest('[data-aus-d]');
       if (del) {
         const a = S.ausgaben.find(x => x.id === del.dataset.ausD);
-        if (!await confirmDlg('Ausgabe löschen?', `${esc(a.lieferant)} vom ${dDE(a.datum)} über ${eur(a.betrag)} wird endgültig gelöscht.`, 'Löschen', true)) return;
-        await guard(async () => { await DB.deleteAusgabe(a.id); S.ausgaben = await DB.listAusgaben(); viewAusgaben(); ablageSyncSpaeter(); }, 'Ausgabe gelöscht');
+        if (!await confirmDlg('Ausgabe löschen?', `${esc(a.lieferant)} vom ${dDE(a.datum)} über ${eur(a.betrag)} wird endgültig gelöscht.${a.beleg_pfad ? ' Die Belegdatei im Ordner bleibt erhalten und taucht danach wieder als neuer Beleg auf.' : ''}`, 'Löschen', true)) return;
+        await guard(async () => { await DB.deleteAusgabe(a.id); S.ausgaben = await DB.listAusgaben(); viewAusgaben(); belegeScannen(); ablageSyncSpaeter(); }, 'Ausgabe gelöscht');
       }
     };
   }
-  function ausgabeDlg(a, done) {
-    a = a || { datum: today(), kategorie: 'Sonstiges', betrag: '' };
+  document.addEventListener('click', e => { const b = e.target.closest('[data-beleg-open]'); if (b) { e.preventDefault(); belegOeffnen(b.dataset.belegOpen); } });
+  async function belegOeffnen(pfad) {
+    if (AB.belege.state === 'needs-permission') await AB.belege.freigeben();
+    if (AB.belege.state !== 'on') return toast('Belege-Ordner ist nicht verbunden (Einstellungen).', true);
+    try { const f = await AB.belege.lese(pfad); window.open(URL.createObjectURL(f), '_blank'); }
+    catch (e) { toast('Beleg nicht gefunden: ' + pfad + '. Wurde die Datei verschoben?', true); }
+  }
+
+  /* Formularfelder, gemeinsam für „Ausgabe erfassen“ und „Beleg prüfen“ */
+  function ausgabeFelder(a) {
     const kats = [...new Set([...AUS_KATS, ...S.ausgaben.map(x => x.kategorie)])];
-    openDlg(`<form id="af" class="dlg"><h2>${a.id ? 'Ausgabe bearbeiten' : 'Ausgabe erfassen'}</h2>
-      <div class="grid2" style="margin-top:16px">
-        <label class="f">Betrag in €<input name="betrag" inputmode="decimal" value="${a.betrag === '' ? '' : numIn(a.betrag)}" required placeholder="0,00"></label>
-        <label class="f">Datum<input type="date" name="datum" value="${a.datum}" required></label>
+    return `<div class="grid2">
+        <label class="f">Betrag in €<input name="betrag" inputmode="decimal" value="${a.betrag === '' || a.betrag == null ? '' : numIn(a.betrag)}" required placeholder="0,00"></label>
+        <label class="f">Datum<input type="date" name="datum" value="${a.datum || today()}" required></label>
         <label class="f span2">Wo / bei wem<input name="lieferant" value="${esc(a.lieferant)}" required placeholder="z. B. Amazon, Restaurant, Deutsche Bahn"></label>
         <label class="f span2">Wofür (optional)<input name="beschreibung" value="${esc(a.beschreibung)}" placeholder="z. B. SD-Karten, Essen mit Kunde"></label>
-        <div class="f span2"><span>Kategorie</span><div class="chips">${kats.map(k => `<label class="chip"><input type="radio" name="kategorie" value="${esc(k)}" ${k === a.kategorie ? 'checked' : ''}>${esc(k)}</label>`).join('')}</div></div>
+        <div class="f span2"><span>Kategorie</span><div class="chips">${kats.map(k => `<label class="chip"><input type="radio" name="kategorie" value="${esc(k)}" ${k === (a.kategorie || 'Sonstiges') ? 'checked' : ''}>${esc(k)}</label>`).join('')}</div></div>
+      </div>`;
+  }
+  function ausForm(form) {
+    const fd = new FormData(form);
+    return { datum: fd.get('datum'), lieferant: fd.get('lieferant').trim(), beschreibung: fd.get('beschreibung').trim() || null, kategorie: fd.get('kategorie') || 'Sonstiges', betrag: r2(num(fd.get('betrag'))) };
+  }
+  /* Ausgelesene Werte nur in leere Felder schreiben */
+  function vorschlagEintragen(form, v) {
+    const setz = (n, w) => { const el = form.querySelector(`[name=${n}]`); if (el && w && !el.value.trim()) el.value = w; };
+    if (v.betrag) setz('betrag', numIn(v.betrag));
+    if (v.datum) { const el = form.querySelector('[name=datum]'); if (el && (!el.dataset.angefasst)) el.value = v.datum; }
+    setz('lieferant', v.lieferant);
+    if (v.kategorie && !form.dataset.katAngefasst) { const r = form.querySelector(`[name=kategorie][value="${CSS.escape(v.kategorie)}"]`); if (r) r.checked = true; }
+  }
+  function lesestatus(v) {
+    if (v.art === 'keins') return 'Dieses Format (HEIC) kann der Browser nicht lesen. Bitte Werte selbst eintragen. Tipp: in der Drive-App „Scannen“ nutzen, das ergibt ein PDF.';
+    if (v.art === 'fehler') return 'Auslesen hat nicht geklappt. Bitte Werte selbst eintragen.';
+    const gef = [v.betrag ? eur(v.betrag) : null, v.datum ? dDE(v.datum) : null, v.lieferant || null].filter(Boolean);
+    return gef.length ? `Erkannt: ${esc(gef.join(' · '))}. Bitte kurz prüfen.` : 'Nichts Eindeutiges erkannt. Bitte Werte selbst eintragen.';
+  }
+  const dateiSicher = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ß/g, 'ss').replace(/[^A-Za-z0-9 -]/g, '').trim().replace(/\s+/g, '_').slice(0, 30) || 'Beleg';
+  async function belegAblegen(file, o) {
+    const ext = (file.name.match(/\.[A-Za-z0-9]+$/) || ['.pdf'])[0].toLowerCase(), jahr = o.datum.slice(0, 4);
+    const basis = `${o.datum}_${dateiSicher(o.lieferant)}_${numIn(o.betrag).replace(',', '-')}`;
+    let name = basis + ext, n = 2;
+    while (await AB.belege.existiert([jahr], name)) name = `${basis}_${n++}${ext}`;
+    const res = await AB.belege.datei([jahr], name, file);
+    return res ? jahr + '/' + name : null;
+  }
+
+  function ausgabeDlg(a, done) {
+    a = a || { datum: today(), kategorie: 'Sonstiges', betrag: '' };
+    const ordner = AB.belege.state === 'on' || AB.belege.state === 'needs-permission';
+    openDlg(`<form id="af" class="dlg"><h2>${a.id ? 'Ausgabe bearbeiten' : 'Ausgabe erfassen'}</h2>
+      <div style="margin-top:16px">${ausgabeFelder(a)}</div>
+      <div class="belegfeld">
+        ${a.beleg_pfad ? `<div class="btn-row"><span class="muted">Beleg: <b>${esc(a.beleg_pfad.split('/').pop())}</b></span><button type="button" class="btn small" data-beleg-open="${esc(a.beleg_pfad)}">Öffnen</button><button type="button" class="btn small" id="bLoesen">Verknüpfung lösen</button></div>`
+          : ordner ? `<label class="f">Beleg anhängen (optional, PDF oder Foto)<input type="file" name="datei" accept="application/pdf,image/*"></label><p class="hint" id="bStatus" style="margin:6px 0 0">Wird im Belege-Ordner abgelegt und automatisch ausgelesen.</p>`
+          : `<p class="hint" style="margin:0">Ohne Beleg ist okay. Zum Anhängen erst unter Einstellungen den Belege-Ordner verbinden${AB.supported ? '' : ' (nur Chrome/Edge)'}.</p>`}
       </div>
-      <p class="hint" style="margin-top:12px">Beleg bitte in Drive unter Mediawo_Buchhaltung/Belege ablegen.</p>
       <div class="actions"><button type="button" class="btn" data-x>Abbrechen</button><button class="btn primary">Speichern</button></div></form>`);
+    const form = $('#af');
     dlg.querySelector('[data-x]').onclick = closeDlg;
-    $('#af').onsubmit = async e => {
-      e.preventDefault(); const fd = new FormData(e.target);
-      const o = { datum: fd.get('datum'), lieferant: fd.get('lieferant').trim(), beschreibung: fd.get('beschreibung').trim() || null, kategorie: fd.get('kategorie') || 'Sonstiges', betrag: r2(num(fd.get('betrag'))) };
-      if (o.betrag <= 0) { toast('Bitte einen Betrag größer als 0 eingeben.', true); return; }
-      if (a.id) o.id = a.id;
-      const ok = await guard(() => DB.saveAusgabe(o), 'Ausgabe gespeichert'); if (!ok) return;
-      closeDlg(); S.ausgaben = await DB.listAusgaben(); ablageSyncSpaeter(); done && done();
+    form.querySelector('[name=datum]').addEventListener('input', e => e.target.dataset.angefasst = '1');
+    form.addEventListener('change', e => { if (e.target.name === 'kategorie') form.dataset.katAngefasst = '1'; });
+    let loesen = false;
+    const lb = $('#bLoesen'); if (lb) lb.onclick = () => { loesen = true; lb.closest('.btn-row').innerHTML = '<span class="muted">Verknüpfung wird beim Speichern gelöst. Die Datei bleibt im Ordner.</span>'; };
+    const fi = form.querySelector('[name=datei]');
+    if (fi) fi.onchange = async () => {
+      const f = fi.files[0]; if (!f) return;
+      $('#bStatus').textContent = 'Wird ausgelesen …';
+      const v = await MWBELEG.lesen(f, f.name); vorschlagEintragen(form, v); $('#bStatus').innerHTML = lesestatus(v);
     };
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const o = ausForm(form);
+      if (o.betrag <= 0) { toast('Bitte einen Betrag größer als 0 eingeben.', true); return; }
+      if (!o.lieferant) { toast('Bitte angeben, wo bzw. bei wem.', true); return; }
+      if (a.id) o.id = a.id;
+      if (loesen) o.beleg_pfad = null;
+      const f = fi && fi.files[0];
+      if (f) {
+        if (AB.belege.state === 'needs-permission') await AB.belege.freigeben();
+        const pfad = AB.belege.state === 'on' ? await belegAblegen(f, o) : null;
+        if (pfad) o.beleg_pfad = pfad; else toast('Beleg konnte nicht im Ordner abgelegt werden. Ausgabe wird ohne Beleg gespeichert.', true);
+      }
+      const ok = await guard(() => DB.saveAusgabe(o), 'Ausgabe gespeichert'); if (!ok) return;
+      closeDlg(); S.ausgaben = await DB.listAusgaben(); ablageSyncSpaeter(); belegeScannen(); done && done();
+    };
+  }
+
+  /* Neue Belege aus dem Ordner nacheinander prüfen */
+  async function belegePruefen(start) {
+    if (AB.belege.state === 'needs-permission') await AB.belege.freigeben();
+    const liste = [...S.belegNeu]; if (!liste.length) return;
+    let i = start || 0, gespeichert = 0, url = null;
+    const ende = async () => {
+      if (url) URL.revokeObjectURL(url); closeDlg();
+      if (gespeichert) { S.ausgaben = await DB.listAusgaben(); ablageSyncSpaeter(); toast(gespeichert === 1 ? '1 Ausgabe übernommen' : gespeichert + ' Ausgaben übernommen'); }
+      await belegeScannen(); go(S.view);
+    };
+    const zeige = async () => {
+      if (i >= liste.length) return ende();
+      const b = liste[i];
+      openDlg(`<form id="bf" class="dlg"><h2>Beleg prüfen <span class="muted" style="font-weight:400">${i + 1} von ${liste.length}</span></h2>
+        <p class="sub">${esc(b.pfad)}</p>
+        <div class="beleg-grid"><div class="beleg-vorschau" id="bv"><p class="muted">Wird geladen …</p></div>
+          <div><p class="hint" id="bStatus">Wird ausgelesen …</p>${ausgabeFelder({ datum: '', betrag: '', kategorie: 'Sonstiges' })}</div></div>
+        <div class="actions"><button type="button" class="btn link" data-b="ign" title="Taucht nicht mehr als neu auf">Kein Ausgabenbeleg</button><button type="button" class="btn" data-b="skip">Später</button><button type="button" class="btn" data-b="close">Schließen</button><button class="btn primary">Als Ausgabe speichern</button></div></form>`, true);
+      const form = $('#bf');
+      form.querySelector('[name=datum]').addEventListener('input', e => e.target.dataset.angefasst = '1');
+      form.addEventListener('change', e => { if (e.target.name === 'kategorie') form.dataset.katAngefasst = '1'; });
+      form.querySelector('[data-b=close]').onclick = ende;
+      form.querySelector('[data-b=skip]').onclick = () => { i++; zeige(); };
+      form.querySelector('[data-b=ign]').onclick = async () => {
+        const ign = await belegIgnoriert(); ign.add(b.pfad); try { await AB.kv('set', 'belegIgnoriert', [...ign]); } catch (e) { }
+        liste.splice(i, 1); zeige();
+      };
+      form.onsubmit = async e => {
+        e.preventDefault();
+        const o = ausForm(form);
+        if (o.betrag <= 0) { toast('Bitte einen Betrag größer als 0 eingeben.', true); return; }
+        if (!o.lieferant) { toast('Bitte angeben, wo bzw. bei wem.', true); return; }
+        o.beleg_pfad = b.pfad;
+        const ok = await guard(() => DB.saveAusgabe(o)); if (!ok) return;
+        gespeichert++; liste.splice(i, 1); zeige();
+      };
+      let file;
+      try { file = await AB.belege.lese(b.pfad); } catch (err) { $('#bv').innerHTML = '<p class="muted">Datei nicht lesbar. Vielleicht verschoben oder noch nicht synchronisiert.</p>'; $('#bStatus').textContent = ''; return; }
+      if (url) URL.revokeObjectURL(url); url = URL.createObjectURL(file);
+      if (!$('#bv')) return;
+      $('#bv').innerHTML = MWBELEG.istPdf(b.name) ? `<iframe src="${url}#view=FitH&toolbar=0" title="Beleg"></iframe>`
+        : MWBELEG.istBild(b.name) ? `<img src="${url}" alt="Beleg">` : '<p class="muted">Keine Vorschau für dieses Format (HEIC). Datei in Drive öffnen oder als PDF scannen.</p>';
+      const v = await MWBELEG.lesen(file, b.name);
+      if ($('#bf') === form) {
+        vorschlagEintragen(form, v);
+        const dup = v.betrag && S.ausgaben.find(x => Math.abs(Number(x.betrag) - v.betrag) < 0.005 && (!v.datum || x.datum === v.datum));
+        $('#bStatus').innerHTML = lesestatus(v) + (dup ? `<br><b>Achtung:</b> ${esc(dup.lieferant)} vom ${dDE(dup.datum)} über ${eur(dup.betrag)} ist schon erfasst${dup.beleg_pfad ? '' : ' (ohne Beleg)'}. Dann lieber „Kein Ausgabenbeleg“ wählen oder die vorhandene Ausgabe bearbeiten.` : '');
+      }
+    };
+    zeige();
   }
 
   /* ---------- Fixkosten & Abos ---------- */

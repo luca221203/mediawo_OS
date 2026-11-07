@@ -286,7 +286,7 @@ table.list tfoot td{border-top:1px solid var(--line);padding-top:12px}
 .panel.mini h2{font-size:15px}
 .panel.mini .chart-head{margin-bottom:10px;align-items:baseline}
 .panel.mini .chart-head .muted{font-weight:600;font-variant-numeric:tabular-nums}
-.mini-list>div{display:grid;grid-template-columns:86px minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.mini-list>div{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
 .mini-list>div.click{cursor:pointer}
 .mini-list>div.click:hover{background:var(--hover)}
 .mini-list .d{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
@@ -303,3 +303,27 @@ table.list tfoot td{border-top:1px solid var(--line);padding-top:12px}
 .chip:has(input:focus-visible){outline:2px solid var(--brand);outline-offset:2px}
 @media (max-width:960px){.cards2{grid-template-columns:1fr}}
 .panel.mini>.btn{align-self:flex-start}
+
+/* Übersicht: drei Karten, Grenze */
+.cards3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:16px}
+.mini-list>div.nodate{grid-template-columns:minmax(0,1fr) auto}
+.panel.grenze{display:grid;grid-template-columns:auto minmax(120px,1fr) auto;align-items:center;gap:18px;padding:16px 22px;margin-bottom:24px}
+.panel.grenze .l{color:var(--muted);font-size:13px;font-weight:500;margin-right:10px}
+.panel.grenze .bar{margin:0}
+.panel.grenze .s{color:var(--muted);font-size:12.5px}
+.belegbox{all:unset;box-sizing:border-box;cursor:pointer;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;width:100%;background:var(--brand-wash);color:var(--brand-text);border-radius:10px;padding:10px 14px;margin:0 0 12px;font-size:13.5px}
+.belegbox span{margin-left:auto;font-weight:600}
+.belegbox:hover{filter:brightness(1.08)}
+.belegbox:focus-visible{outline:2px solid var(--brand)}
+.nav .count.soft{background:var(--raised);color:var(--ink);border:1px solid var(--line)}
+/* Beleg prüfen */
+dialog.wide:has(.beleg-grid){width:min(1100px,calc(100vw - 32px))}
+.beleg-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:22px;margin-top:16px}
+.beleg-vorschau{background:var(--desk);border:1px solid var(--line);border-radius:10px;height:min(62vh,640px);display:grid;place-items:center;overflow:hidden}
+.beleg-vorschau iframe{width:100%;height:100%;border:0;background:#fff}
+.beleg-vorschau img{max-width:100%;max-height:100%;object-fit:contain}
+.beleg-vorschau p{padding:20px;text-align:center}
+.belegfeld{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+.belegfeld input[type=file]{height:auto;padding:8px 0;border:0;background:none}
+@media (max-width:1100px){.cards3{grid-template-columns:1fr 1fr}.cards3>:last-child{grid-column:1/-1}}
+@media (max-width:760px){.cards3{grid-template-columns:1fr}.panel.grenze{grid-template-columns:1fr;gap:8px}.beleg-grid{grid-template-columns:1fr}.beleg-vorschau{height:40vh}}

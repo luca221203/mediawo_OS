@@ -62,6 +62,26 @@
         try { const d = await unter(...teile); await d.getFileHandle(name); return true; }
         catch (e) { if (e.name === 'NotFoundError' || e.name === 'TypeMismatchError') return false; fehler(e, true); return false; }
       },
+      /* Alle Dateien im Ordner (bis 3 Ebenen tief), Pfad relativ zum Ordner */
+      async dateien(filter) {
+        if (state !== 'on') return [];
+        const out = [];
+        async function lauf(dir, pfad, tiefe) {
+          for await (const [name, h] of dir.entries()) {
+            if (name.startsWith('.') || name.startsWith('~')) continue;
+            if (h.kind === 'directory') { if (tiefe < 3) await lauf(h, pfad.concat(name), tiefe + 1); }
+            else if (!filter || filter(name)) { try { const f = await h.getFile(); out.push({ pfad: pfad.concat(name).join('/'), name, size: f.size, geaendert: f.lastModified }); } catch (e) { } }
+          }
+        }
+        try { await lauf(handle, [], 0); } catch (e) { fehler(e); }
+        return out;
+      },
+      async lese(pfad) {
+        if (state !== 'on') return null;
+        const teile = pfad.split('/'); let d = handle;
+        for (const t of teile.slice(0, -1)) d = await d.getDirectoryHandle(t);
+        return (await d.getFileHandle(teile[teile.length - 1])).getFile();
+      },
       async datei(teile, name, inhalt) {
         if (state !== 'on') return null;
         try { const d = await unter(...teile); const size = await schreiben(d, name, inhalt); return { path: [handle.name, ...teile].join('/'), name, size }; }
@@ -72,13 +92,14 @@
 
   const pdf = ordnerSpeicher('pdfDir', 'mediawo-pdf');
   const backup = ordnerSpeicher('backupDir', 'mediawo-sicherung');
+  const belege = ordnerSpeicher('belegDir', 'mediawo-belege');
   let letzteSicherung = null;
 
   window.ABLAGE = {
-    supported: SUPPORTED, pdf, backup,
+    supported: SUPPORTED, pdf, backup, belege, kv,
     get letzteSicherung() { return letzteSicherung; },
     async init() {
-      await Promise.all([pdf.init(), backup.init()]);
+      await Promise.all([pdf.init(), backup.init(), belege.init()]);
       try { letzteSicherung = await kv('get', 'letzteSicherung') || null; } catch (e) { }
     },
     existiertPdf(info) { return pdf.existiert([info.jahr], info.name); },
