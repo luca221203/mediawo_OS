@@ -18,6 +18,7 @@
       <label class="f">E-Mail<input name="email" type="email" autocomplete="username" required></label>
       <label class="f">Passwort<input name="password" type="password" autocomplete="current-password" required></label>
       <button class="btn primary" type="submit">Anmelden</button>
+      <button class="btn link" type="button" id="pwForgot">Passwort vergessen?</button>
     </div>
     <p class="err" id="loginErr"></p>
   </form>
@@ -35,7 +36,7 @@
       <button data-view="leistungen">Leistungen</button>
       <button data-view="einstellungen">Firmendaten</button>
     </nav>
-    <div class="user"><span id="userMail"></span><br><button class="btn small" id="logout">Abmelden</button></div>
+    <div class="user"><span id="userMail"></span><br><button class="btn small" id="pwChange">Passwort ändern</button> <button class="btn small" id="logout">Abmelden</button></div>
   </aside>
   <main id="main" tabindex="-1"></main>
 </div>
