@@ -1,0 +1,35 @@
+Mediawo OS – Version 1
+======================
+
+Inhalt dieses Ordners
+- index.html, css/, js/, img/, fonts/, vendor/   die App
+- supabase/01_schema.sql                          Datenbank (bereits in Supabase ausgeführt)
+
+Ausprobieren ohne echte Daten
+  Nach dem Hochladen die Adresse mit ?demo am Ende öffnen, z. B.
+  https://luca221203.github.io/mediawo-os/?demo
+  Beliebige E-Mail und beliebiges Passwort eingeben. Nichts wird gespeichert.
+
+Auf GitHub hochladen (einmalig)
+1. github.com > "+" > "New repository", Name: mediawo-os, Sichtbarkeit "Public".
+   Der Code enthält keine Geheimnisse. Die Daten liegen in Supabase und sind nur
+   nach dem Login sichtbar.
+2. "uploading an existing file" anklicken und den INHALT dieses Ordners
+   hineinziehen (alle Dateien und Unterordner, nicht den Ordner selbst).
+   Den Ordner "supabase" nicht hochladen, er wird nur einmalig gebraucht.
+3. "Commit changes".
+4. Settings > Pages > Branch "main" / "/(root)" > Save.
+5. Nach 1–2 Minuten erreichbar unter https://luca221203.github.io/mediawo-os/
+
+Danach in Supabase (einmalig)
+  Authentication > URL Configuration > Site URL auf
+  https://luca221203.github.io/mediawo-os/ setzen.
+
+Updates
+  Geänderte Dateien erneut auf GitHub hochladen.
+
+Wichtig
+- Rechnungen sind nach dem Erstellen festgeschrieben (GoBD). Korrektur nur per Storno.
+- Rechnungs-PDFs werden heruntergeladen. Bis zur automatischen Drive-Ablage
+  (Version 2) bitte in Drive unter MW_Kundenprojekte/<Kunde>/Rechnungen ablegen.
+- In js/config.js steht nur der öffentliche publishable key. Den secret key nie eintragen.

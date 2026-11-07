@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Mediawo OS</title>
+<link rel="icon" type="image/png" href="img/icon.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<section class="login" id="login" hidden>
+  <form id="loginForm">
+    <img src="img/logo.png" alt="Mediawo">
+    <h2>Anmelden</h2>
+    <div class="stack" style="gap:12px">
+      <label class="f">E-Mail<input name="email" type="email" autocomplete="username" required></label>
+      <label class="f">Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn primary" type="submit">Anmelden</button>
+    </div>
+    <p class="err" id="loginErr"></p>
+  </form>
+</section>
+
+<div class="app" id="app" hidden>
+  <aside class="side">
+    <img src="img/logo.png" alt="Mediawo">
+    <div class="demo-badge" id="demoBadge" hidden>Demo-Modus: Beispieldaten, nichts wird gespeichert.</div>
+    <nav id="nav">
+      <button data-view="start">Übersicht</button>
+      <button data-view="rechnungen">Rechnungen</button>
+      <button data-view="neu">Neue Rechnung</button>
+      <button data-view="kunden">Kunden</button>
+      <button data-view="leistungen">Leistungen</button>
+      <button data-view="einstellungen">Firmendaten</button>
+    </nav>
+    <div class="user"><span id="userMail"></span><br><button class="btn small" id="logout">Abmelden</button></div>
+  </aside>
+  <main id="main" tabindex="-1"></main>
+</div>
+
+<dialog id="dlg"></dialog>
+<div id="toast" role="status"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="vendor/jspdf.umd.min.js"></script>
+<script src="vendor/pdf-fonts.js"></script>
+<script src="js/config.js"></script>
+<script src="js/db.js"></script>
+<script src="js/pdf.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
