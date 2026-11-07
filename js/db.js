@@ -77,7 +77,14 @@
         const q = f.id ? sb.from('fixkosten').update(f).eq('id', f.id) : sb.from('fixkosten').insert(f);
         const { data, error } = await q.select().single(); fail(error); return data;
       },
-      async deleteFixkosten(id) { const { error } = await sb.from('fixkosten').delete().eq('id', id); fail(error); }
+      async deleteFixkosten(id) { const { error } = await sb.from('fixkosten').delete().eq('id', id); fail(error); },
+      /* Variable Ausgaben (Tabelle aus 01_schema.sql) */
+      async listAusgaben() { const { data, error } = await sb.from('ausgaben').select('*').order('datum', { ascending: false }).order('created_at', { ascending: false }); fail(error); return data; },
+      async saveAusgabe(a) {
+        const q = a.id ? sb.from('ausgaben').update(a).eq('id', a.id) : sb.from('ausgaben').insert(a);
+        const { data, error } = await q.select().single(); fail(error); return data;
+      },
+      async deleteAusgabe(id) { const { error } = await sb.from('ausgaben').delete().eq('id', id); fail(error); }
     };
   }
 
@@ -111,6 +118,9 @@
       { id: uid(), anbieter: 'Sparkasse Trier', zweck: 'Kontoführung', kategorie: 'Bank', betrag: 9, intervall: 'monatlich', aktiv: true, notiz: null, created_at: '2026-01-04' },
       { id: uid(), anbieter: 'IONOS', zweck: 'Domain media-wo.de', kategorie: 'Software', betrag: 1, intervall: 'monatlich', aktiv: true, notiz: null, created_at: '2026-01-05' }
     ];
+    const ausgaben = [[-3, 'Restaurant Zeitsprung', 'Essen mit Kunde DeFORIS', 'Bewirtung', 64.8], [-12, 'Amazon', 'SD-Karten 2x 128 GB', 'Technik', 39.98],
+      [-35, 'Deutsche Bahn', 'Fahrt Köln, Dreh', 'Fahrtkosten', 58.9], [-60, 'Thomann', 'Mikrofon Rode Wireless', 'Technik', 229], [-95, 'Meta', 'Werbeanzeigen', 'Werbung', 50],
+      [-140, 'Druckerei', 'Visitenkarten', 'Werbung', 34.5]].map(([t, l, b, k, x]) => ({ id: uid(), datum: addDays(today, t), lieferant: l, beschreibung: b, kategorie: k, betrag: x, created_at: '' }));
     function statusNeu(rid) {
       const r = rechnungen.find(x => x.id === rid); if (!r || r.typ !== 'rechnung' || r.status === 'storniert') return;
       const zs = zahlungen.filter(z => z.rechnung_id === rid), sum = zs.reduce((a, z) => a + z.betrag, 0);
@@ -202,7 +212,13 @@
         if (f.id) { Object.assign(fixkosten.find(x => x.id === f.id), f); return wait(f); }
         const n = { aktiv: true, ...f, id: uid(), created_at: new Date().toISOString() }; fixkosten.push(n); return wait(n);
       },
-      async deleteFixkosten(id) { fixkosten.splice(fixkosten.findIndex(x => x.id === id), 1); return wait(null); }
+      async deleteFixkosten(id) { fixkosten.splice(fixkosten.findIndex(x => x.id === id), 1); return wait(null); },
+      async listAusgaben() { return wait([...ausgaben].sort((a, b) => b.datum.localeCompare(a.datum))); },
+      async saveAusgabe(a) {
+        if (a.id) { Object.assign(ausgaben.find(x => x.id === a.id), a); return wait(a); }
+        const n = { ...a, id: uid(), created_at: new Date().toISOString() }; ausgaben.push(n); return wait(n);
+      },
+      async deleteAusgabe(id) { ausgaben.splice(ausgaben.findIndex(x => x.id === id), 1); return wait(null); }
     };
   }
 

@@ -12,7 +12,7 @@
   const numIn = n => (Number(n) || 0).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false });
   const whenTxt = iso => { if (!iso) return ''; const d = new Date(iso), t = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }); return d.toDateString() === new Date().toDateString() ? 'heute ' + t : d.toLocaleDateString('de-DE') + ' ' + t; };
 
-  const S = { firma: null, kunden: [], leistungen: [], rechnungen: [], mahnungen: [], zahlungen: [], fixkosten: [], zOk: true, view: 'start', draft: null, filter: { jahr: 'alle', status: 'alle' }, periode: { art: 'jahr', ref: today() } };
+  const S = { firma: null, kunden: [], leistungen: [], rechnungen: [], mahnungen: [], zahlungen: [], fixkosten: [], ausgaben: [], zOk: true, ui: { zAlle: false, aAlle: false }, view: 'start', draft: null, filter: { jahr: 'alle', status: 'alle' }, periode: { art: 'jahr', ref: today() } };
 
   /* ---------- Hilfen ---------- */
   function toast(msg, err) { const t = $('#toast'); t.textContent = msg; t.className = err ? 'show err' : 'show'; clearTimeout(t._t); t._t = setTimeout(() => t.className = '', err ? 6000 : 2600); }
@@ -64,6 +64,7 @@
     const [firma, kunden, leistungen, rechnungen, mahnungen] = await Promise.all([DB.getFirma(), DB.listKunden(), DB.listLeistungen(), DB.listRechnungen(), DB.listMahnungen()]);
     Object.assign(S, { firma, kunden, leistungen, rechnungen, mahnungen });
     /* Zahlungen und Fixkosten gibt es erst nach 03_zahlungen_fixkosten.sql. Bis dahin: bezahlte Rechnungen als je eine Zahlung werten. */
+    try { S.ausgaben = await DB.listAusgaben(); } catch (e) { console.warn('Ausgaben', e); S.ausgaben = []; }
     try { [S.zahlungen, S.fixkosten] = await Promise.all([DB.listZahlungen(), DB.listFixkosten()]); S.zOk = true; }
     catch (e) {
       console.warn('Zahlungen/Fixkosten', e); S.zOk = false; S.fixkosten = [];
@@ -75,7 +76,7 @@
   /* ---------- PDF-Ablage & Datensicherung ---------- */
   let syncLaeuft = false, syncNochmal = false, syncTimer = null, fehlend = 0;
   function ablageSyncSpaeter() { clearTimeout(syncTimer); syncTimer = setTimeout(ablageSync, 800); }
-  function sicherungsDaten() { return { firma: S.firma, kunden: S.kunden, leistungen: S.leistungen, rechnungen: S.rechnungen, mahnungen: S.mahnungen, zahlungen: S.zOk ? S.zahlungen : [], fixkosten: S.fixkosten }; }
+  function sicherungsDaten() { return { firma: S.firma, kunden: S.kunden, leistungen: S.leistungen, rechnungen: S.rechnungen, mahnungen: S.mahnungen, zahlungen: S.zOk ? S.zahlungen : [], fixkosten: S.fixkosten, ausgaben: S.ausgaben }; }
   async function ablageSync() {
     if (!S.firma) return;
     if (syncLaeuft) { syncNochmal = true; return; }
@@ -222,7 +223,7 @@
     const ue = S.rechnungen.filter(r => status(r) === 'ueberfaellig').length;
     const c = $('#navOverdue'); c.hidden = !ue; c.textContent = ue;
     $('#main').onclick = null; $('#main').oninput = null;
-    ({ start: viewStart, rechnungen: viewRechnungen, neu: viewNeu, kunden: viewKunden, leistungen: viewLeistungen, einstellungen: viewFirma })[v]();
+    ({ start: viewStart, rechnungen: viewRechnungen, neu: viewNeu, kunden: viewKunden, leistungen: viewLeistungen, ausgaben: viewAusgaben, einstellungen: viewFirma })[v]();
     $('#main').focus({ preventScroll: true }); window.scrollTo(0, 0);
   }
 
@@ -428,6 +429,7 @@
     return plusU(montag(p.ref), 7 * n);
   }
   const imZeitraum = (iso, von, bis) => iso >= von && iso <= bis;
+  const summeA = (von, bis) => r2(S.ausgaben.filter(a => imZeitraum(a.datum, von, bis)).reduce((s, a) => s + Number(a.betrag), 0));
   const summeZ = (von, bis) => r2(S.zahlungen.filter(z => imZeitraum(z.datum, von, bis)).reduce((a, z) => a + Number(z.betrag), 0));
 
   function viewStart() {
@@ -435,7 +437,9 @@
     const zs = S.zahlungen.filter(z => imZeitraum(z.datum, pr.von, pr.bis)).sort((a, b) => b.datum.localeCompare(a.datum));
     const eingang = r2(zs.reduce((a, z) => a + Number(z.betrag), 0));
     const fix = r2(fixFuer(pr.art, pr.von, pr.bis)), fm = fixProMonat();
-    const ergebnis = r2(eingang - fix), deckung = fix ? Math.round(eingang / fix * 100) : 0;
+    const as = S.ausgaben.filter(a => imZeitraum(a.datum, pr.von, pr.bis));
+    const variabel = r2(as.reduce((s, a) => s + Number(a.betrag), 0)), kosten = r2(fix + variabel);
+    const ergebnis = r2(eingang - kosten), deckung = kosten ? Math.round(eingang / kosten * 100) : 0;
     const rs = S.rechnungen.filter(r => imZeitraum(r.datum, pr.von, pr.bis));
     const umsatz = r2(rs.reduce((a, r) => a + Number(r.brutto), 0));
     const offen = S.rechnungen.filter(r => r.typ === 'rechnung' && r.status === 'offen');
@@ -447,8 +451,8 @@
     const kunde = id => { const r = S.rechnungen.find(x => x.id === id); return r ? r : {}; };
 
     $('#main').innerHTML = `
-      <div class="head"><div><h1>Übersicht</h1><p class="sub">${esc(S.firma.marke)} · Einnahmen und Fixkosten</p></div>
-        <button class="btn primary" data-go="neu">Neue Rechnung</button></div>
+      <div class="head"><div><h1>Übersicht</h1><p class="sub">${esc(S.firma.marke)} · Einnahmen und Kosten</p></div>
+        <div class="btn-row"><button class="btn" data-aus-neu>Ausgabe erfassen</button><button class="btn primary" data-go="neu">Neue Rechnung</button></div></div>
       ${S.zOk ? '' : '<p class="note">Zahlungen und Fixkosten sind noch nicht eingerichtet. Bitte einmal <b>03_zahlungen_fixkosten.sql</b> im Supabase SQL Editor ausführen. Bis dahin zählt jede bezahlte Rechnung als eine Zahlung, Fixkosten fehlen.</p>'}
       <div class="ptool">
         <div class="seg" role="group" aria-label="Zeitraum">${['jahr', 'monat', 'woche'].map(a => `<button data-p-art="${a}" aria-pressed="${a === pr.art}">${{ jahr: 'Jahr', monat: 'Monat', woche: 'Woche' }[a]}</button>`).join('')}</div>
@@ -457,16 +461,29 @@
       </div>
       <div class="summary">
         <div><span class="l">Eingegangen</span><span class="v">${eur(eingang)}</span><span class="s">${zs.length} ${zs.length === 1 ? 'Zahlung' : 'Zahlungen'} ${{ jahr: 'im Jahr', monat: 'im Monat', woche: 'in der Woche' }[pr.art]}</span></div>
-        <div><span class="l">Fixkosten</span><span class="v">${eur(fix)}</span><span class="s">${eur(fm)} pro Monat · ${S.fixkosten.filter(f => f.aktiv).length} Posten</span></div>
-        <div class="${ergebnis < 0 ? 'alert' : ''}"><span class="l">${ergebnis < 0 ? 'Fehlt noch' : 'Über den Fixkosten'}</span><span class="v ${ergebnis >= 0 ? 'ok' : ''}">${eur(Math.abs(ergebnis))}</span>
-          <div class="bar ${deckung >= 100 ? '' : 'crit'}"><i style="width:${Math.min(100, deckung)}%"></i></div><span class="s">${fix ? deckung + ' % der Fixkosten gedeckt' : 'Keine Fixkosten hinterlegt'}</span></div>
+        <div><span class="l">Kosten</span><span class="v">${eur(kosten)}</span><span class="s">${eur(fix)} fix · ${eur(variabel)} Ausgaben</span></div>
+        <div class="${ergebnis < 0 ? 'alert' : ''}"><span class="l">${ergebnis < 0 ? 'Fehlt noch' : 'Ergebnis'}</span><span class="v ${ergebnis >= 0 ? 'ok' : ''}">${eur(Math.abs(ergebnis))}</span>
+          <div class="bar ${deckung >= 100 ? '' : 'crit'}"><i style="width:${Math.min(100, deckung)}%"></i></div><span class="s">${kosten ? deckung + ' % der Kosten gedeckt' : 'Keine Kosten hinterlegt'}</span></div>
         <div><span class="l">Rechnungsumsatz</span><span class="v">${eur(umsatz)}</span><span class="s">${rs.filter(r => r.typ === 'rechnung').length} Rechnungen geschrieben</span></div>
       </div>
       <div class="panel chart-panel">
-        <div class="chart-head"><h2>Eingänge ${pr.art === 'jahr' ? 'pro Monat' : pr.art === 'monat' ? 'pro Woche' : 'pro Tag'}</h2>
-          <span class="legend"><i class="lg-bar"></i>Eingegangen <i class="lg-line"></i>Fixkosten${pr.art === 'woche' ? ' pro Tag' : pr.art === 'monat' ? ' pro Woche' : ' pro Monat'}</span></div>
+        <div class="chart-head"><h2>Eingänge und Ausgaben ${pr.art === 'jahr' ? 'pro Monat' : pr.art === 'monat' ? 'pro Woche' : 'pro Tag'}</h2>
+          <span class="legend"><i class="lg-bar"></i>Eingegangen <i class="lg-bar aus"></i>Ausgaben <i class="lg-line"></i>Fixkosten${pr.art === 'woche' ? ' pro Tag' : pr.art === 'monat' ? ' pro Woche' : ' pro Monat'}</span></div>
         <div id="chart" class="chart"></div>
         ${pr.art !== 'woche' ? `<p class="hint" style="margin:8px 0 0">Balken anklicken, um ${pr.art === 'jahr' ? 'den Monat' : 'die Woche'} zu öffnen. Jahresbeiträge (z. B. Versicherung) sind auf die Monate verteilt.</p>` : ''}
+      </div>
+      <div class="cards2">
+        <div class="panel mini">
+          <div class="chart-head"><h2>Eingänge · ${esc(pr.titel)}</h2><span class="muted">${eur(eingang)}</span></div>
+          ${zs.length ? `<div class="mini-list">${(S.ui.zAlle ? zs : zs.slice(0, 3)).map(z => { const r = kunde(z.rechnung_id); return `<div><span class="d">${dDE(z.datum)}</span><span class="t">${esc(kundeName(r.kunde_snapshot))}<small>${esc(r.nummer || '')}${z.notiz ? ' · ' + esc(z.notiz) : ''}</small></span><b>${eur(z.betrag)}</b></div>`; }).join('')}</div>
+            ${zs.length > 3 ? `<button class="btn link small more" data-toggle="zAlle">${S.ui.zAlle ? 'Weniger anzeigen' : `Alle ${zs.length} anzeigen`}</button>` : ''}` : '<p class="empty small">Keine Zahlungseingänge in diesem Zeitraum.</p>'}
+        </div>
+        <div class="panel mini">
+          <div class="chart-head"><h2>Ausgaben · ${esc(pr.titel)}</h2><span class="muted">${eur(variabel)}</span></div>
+          ${as.length ? `<div class="mini-list">${(S.ui.aAlle ? as : as.slice(0, 3)).map(x => `<div class="click" data-aus-e="${x.id}"><span class="d">${dDE(x.datum)}</span><span class="t">${esc(x.lieferant)}<small>${esc([x.kategorie, x.beschreibung].filter(Boolean).join(' · '))}</small></span><b>${eur(x.betrag)}</b></div>`).join('')}</div>
+            ${as.length > 3 ? `<button class="btn link small more" data-toggle="aAlle">${S.ui.aAlle ? 'Weniger anzeigen' : `Alle ${as.length} anzeigen`}</button>` : ''}` : '<p class="empty small">Keine Ausgaben in diesem Zeitraum.</p>'}
+          <button class="btn small" data-aus-neu style="margin-top:12px">+ Ausgabe</button>
+        </div>
       </div>
       <div class="summary two">
         <div class="${ue.length ? 'alert' : ''}"><span class="l">Offen (alle Rechnungen)</span><span class="v">${eur(offenSum)}</span><span class="s">${offen.length} Rechnungen${ue.length ? ` · ${ue.length} überfällig (${eur(ueSum)})` : ''}</span></div>
@@ -474,10 +491,6 @@
           <span class="s">${rest > 0 ? `noch ${eur(rest)} bis ${eur(G)}` : `${eur(G)} überschritten`}</span></div>
       </div>
       ${pct >= 70 ? `<p class="note">Liegt der Umsatz ${j} über ${eur(G)}, gilt ab 1. Januar ${+j + 1} die Kleinunternehmerregelung nicht mehr. Über ${eur(C.grenzeLaufend)} im laufenden Jahr endet sie sofort. Rechtzeitig steuerlich klären und den Wechsel zu lexoffice planen.</p>` : ''}
-      <h2 class="section">Zahlungseingänge · ${esc(pr.titel)}</h2>
-      ${zs.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Datum</th><th>Rechnung</th><th>Kunde</th><th>Notiz</th><th class="num">Betrag</th></tr></thead><tbody>
-        ${zs.map(z => { const r = kunde(z.rechnung_id); return `<tr><td class="nowrap">${dDE(z.datum)}</td><td class="nowrap">${esc(r.nummer || '')}</td><td>${esc(kundeName(r.kunde_snapshot))}</td><td class="muted">${esc(z.notiz || '')}</td><td class="num">${eur(z.betrag)}</td></tr>`; }).join('')}
-        </tbody></table></div>` : '<div class="table-wrap"><p class="empty">Keine Zahlungseingänge in diesem Zeitraum.</p></div>'}
       <h2 class="section">Offene Rechnungen</h2>
       ${offen.length ? rechnungTabelle([...offen].sort((a, b) => faellig(a).localeCompare(faellig(b)))) : '<div class="table-wrap"><p class="empty">Keine offenen Rechnungen.</p></div>'}`;
     bindTabelle();
@@ -487,6 +500,9 @@
       if (a) { P.art = a.dataset.pArt; if (!imZeitraum(P.ref, pr.von, pr.bis)) P.ref = pr.von; if (imZeitraum(heute, pr.von, pr.bis)) P.ref = heute; return viewStart(); }
       if (n) { P.ref = verschieben({ art: pr.art, ref: P.ref }, +n.dataset.pNav); return viewStart(); }
       if (h) { P.ref = heute; return viewStart(); }
+      const tg = e.target.closest('[data-toggle]'); if (tg) { S.ui[tg.dataset.toggle] = !S.ui[tg.dataset.toggle]; return viewStart(); }
+      if (e.target.closest('[data-aus-neu]')) return ausgabeDlg(null, viewStart);
+      const ae = e.target.closest('[data-aus-e]'); if (ae) return ausgabeDlg(S.ausgaben.find(x => x.id === ae.dataset.ausE), viewStart);
       if (bar) { const t = pr.teile[+bar.dataset.drill]; P.art = t.art; P.ref = t.ref || t.von; return viewStart(); }
       tab(e);
     };
@@ -498,18 +514,19 @@
   function zeichneChart(pr) {
     const box = $('#chart'); if (!box) return;
     const W = Math.max(300, box.clientWidth), H = 240, L = 58, R = 12, T = 14, B = 30, heute = today();
-    const daten = pr.teile.map(t => ({ ...t, ein: summeZ(t.von, t.bis), fix: r2(fixFuer(t.art, t.von, t.bis)), zukunft: t.von > heute, jetzt: imZeitraum(heute, t.von, t.bis) }));
+    const daten = pr.teile.map(t => ({ ...t, ein: summeZ(t.von, t.bis), aus: summeA(t.von, t.bis), fix: r2(fixFuer(t.art, t.von, t.bis)), zukunft: t.von > heute, jetzt: imZeitraum(heute, t.von, t.bis) }));
     const ref = pr.art === 'monat' ? fixFuer('woche', '2000-01-03', '2000-01-09') : pr.art === 'woche' ? fixFuer('tag', '2000-01-03', '2000-01-03') : fixFuer('monat');
-    const max = Math.max(ref * 1.15, ...daten.map(d => d.ein), 10);
+    const max = Math.max(ref * 1.15, ...daten.map(d => Math.max(d.ein, d.aus)), 10);
     const schritt = [10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000].find(s => max / s <= 4) || 20000;
     const top = Math.ceil(max * 1.08 / schritt) * schritt, y = v => T + (H - T - B) * (1 - v / top);
-    const bw = (W - L - R) / daten.length, bar = Math.min(44, bw * 0.56);
+    const bw = (W - L - R) / daten.length, bar = Math.min(26, (bw * 0.7 - 2) / 2);
     const kurzEur = v => v >= 1000 ? (v / 1000).toLocaleString('de-DE', { maximumFractionDigits: 1 }) + ' T€' : Math.round(v) + ' €';
     let g = '';
     for (let v = 0; v <= top + 0.01; v += schritt) g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="grid"/><text x="${L - 8}" y="${y(v) + 4}" class="ax" text-anchor="end">${kurzEur(v)}</text>`;
     const bars = daten.map((d, i) => {
-      const x = L + i * bw + (bw - bar) / 2, h = Math.max(0, y(0) - y(d.ein)), rr = Math.min(4, h);
-      const path = h > 0 ? `<path class="b" d="M${x},${y(0)} v${-(h - rr)} q0,${-rr} ${rr},${-rr} h${bar - 2 * rr} q${rr},0 ${rr},${rr} v${h - rr} z"/>` : '';
+      const x0 = L + i * bw + (bw - 2 * bar - 2) / 2;
+      const saeule = (x, v, cls) => { const h = Math.max(0, y(0) - y(v)), rr = Math.min(4, h, bar / 2); return h > 0 ? `<path class="${cls}" d="M${x},${y(0)} v${-(h - rr)} q0,${-rr} ${rr},${-rr} h${bar - 2 * rr} q${rr},0 ${rr},${rr} v${h - rr} z"/>` : ''; };
+      const path = saeule(x0, d.ein, 'b') + saeule(x0 + bar + 2, d.aus, 'b aus');
       return `<g class="col${d.zukunft ? ' fut' : ''}${d.jetzt ? ' now' : ''}" data-i="${i}" ${pr.art !== 'woche' ? `data-drill="${i}"` : ''}>
         <rect class="hit" x="${L + i * bw}" y="${T}" width="${bw}" height="${H - T - B + 24}"/>${path}
         <text x="${L + i * bw + bw / 2}" y="${H - 10}" class="ax${d.jetzt ? ' cur' : ''}" text-anchor="middle">${esc(bw >= 64 ? d.kurz : pr.art === 'jahr' ? (bw >= 30 ? d.kurz.slice(0, 3) : d.kurz[0]) : pr.art === 'monat' ? d.kurz.replace('KW ', '') : d.kurz.slice(0, 2))}</text></g>`;
@@ -521,11 +538,11 @@
     box.querySelectorAll('.col').forEach(c => {
       const d = daten[+c.dataset.i];
       c.addEventListener('mouseenter', () => {
-        const diff = r2(d.ein - d.fix);
-        tip.innerHTML = `<strong>${esc(d.lang)}</strong><div><span>Eingegangen</span><b>${eur(d.ein)}</b></div><div><span>Fixkosten</span><b>${eur(d.fix)}</b></div><div><span>${diff < 0 ? 'Fehlt' : 'Darüber'}</span><b>${eur(Math.abs(diff))}</b></div>`;
+        const diff = r2(d.ein - d.fix - d.aus);
+        tip.innerHTML = `<strong>${esc(d.lang)}</strong><div><span>Eingegangen</span><b>${eur(d.ein)}</b></div><div><span>Fixkosten</span><b>${eur(d.fix)}</b></div><div><span>Ausgaben</span><b>${eur(d.aus)}</b></div><div class="sum"><span>${diff < 0 ? 'Fehlt' : 'Ergebnis'}</span><b>${eur(Math.abs(diff))}</b></div>`;
         tip.hidden = false;
         const x = L + (+c.dataset.i + 0.5) * bw; tip.style.left = Math.min(W - tip.offsetWidth - 4, Math.max(4, x - tip.offsetWidth / 2)) + 'px';
-        tip.style.top = Math.max(0, y(Math.max(d.ein, ref)) - tip.offsetHeight - 10) + 'px';
+        tip.style.top = Math.max(0, y(Math.max(d.ein, d.aus, ref)) - tip.offsetHeight - 10) + 'px';
       });
       c.addEventListener('mouseleave', () => { tip.hidden = true; });
     });
@@ -829,6 +846,68 @@
       ['mwst_satz', 'zahlungsziel_tage', 'mahnfrist_tage'].forEach(k => o[k] = num(o[k]));
       if (!o.kleinunternehmer && S.firma.kleinunternehmer && !(await confirmDlg('Kleinunternehmerregelung ausschalten?', 'Neue Rechnungen enthalten dann ' + o.mwst_satz + ' % Umsatzsteuer. Nur ausschalten, wenn ihr umsatzsteuerpflichtig seid.', 'Ausschalten', true))) return;
       await guard(async () => { await DB.saveFirma(o); S.firma = await DB.getFirma(); ablageSyncSpaeter(); }, 'Firmendaten gespeichert');
+    };
+  }
+
+  /* ---------- Ausgaben (variable Kosten) ---------- */
+  const AUS_KATS = ['Bewirtung', 'Technik', 'Material', 'Software', 'Fahrtkosten', 'Werbung', 'Büro', 'Fortbildung', 'Sonstiges'];
+  function viewAusgaben() {
+    const jahre = [...new Set([today().slice(0, 4), ...S.ausgaben.map(a => a.datum.slice(0, 4))])].sort().reverse();
+    if (!S.filter.ausJahr) S.filter.ausJahr = today().slice(0, 4);
+    const fj = S.filter.ausJahr, fk = S.filter.ausKat || 'alle';
+    let list = S.ausgaben.filter(a => fj === 'alle' || a.datum.startsWith(fj));
+    const proKat = {}; list.forEach(a => proKat[a.kategorie] = r2((proKat[a.kategorie] || 0) + Number(a.betrag)));
+    if (fk !== 'alle') list = list.filter(a => a.kategorie === fk);
+    const sum = r2(list.reduce((s, a) => s + Number(a.betrag), 0));
+    const opt = (v, l, cur) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`;
+    $('#main').innerHTML = `
+      <div class="head"><div><h1>Ausgaben</h1><p class="sub">Alles, was nicht regelmäßig anfällt: Einkäufe, Essen, Fahrten, Werbung. Fixkosten stehen unter Einstellungen.</p></div>
+        <div class="btn-row"><button class="btn" id="aCsv">CSV für EÜR</button><button class="btn primary" data-aus-neu>Neue Ausgabe</button></div></div>
+      <div class="toolbar"><select id="aJahr">${opt('alle', 'Alle Jahre', fj)}${jahre.map(j => opt(j, j, fj)).join('')}</select></div>
+      ${Object.keys(proKat).length ? `<div class="chips"><button class="chip" data-kat="alle" aria-pressed="${fk === 'alle'}">Alle · ${eur(Object.values(proKat).reduce((a, b) => a + b, 0))}</button>${Object.entries(proKat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<button class="chip" data-kat="${esc(k)}" aria-pressed="${k === fk}">${esc(k)} · ${eur(v)}</button>`).join('')}</div>` : ''}
+      ${list.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Datum</th><th>Wofür</th><th>Kategorie</th><th class="num">Betrag</th><th></th></tr></thead><tbody>
+        ${list.map(a => `<tr><td class="nowrap">${dDE(a.datum)}</td><td>${esc(a.lieferant)}${a.beschreibung ? `<br><span class="muted">${esc(a.beschreibung)}</span>` : ''}</td><td>${esc(a.kategorie)}</td><td class="num">${eur(a.betrag)}</td>
+          <td><div class="btn-row end"><button class="btn small" data-aus-e="${a.id}">Bearbeiten</button><button class="btn small danger" data-aus-d="${a.id}">Löschen</button></div></td></tr>`).join('')}
+        </tbody><tfoot><tr><td colspan="3"><b>Summe</b></td><td class="num"><b>${eur(sum)}</b></td><td></td></tr></tfoot></table></div>` : '<div class="table-wrap"><p class="empty">Keine Ausgaben in diesem Zeitraum.</p></div>'}`;
+    $('#aJahr').onchange = e => { S.filter.ausJahr = e.target.value; S.filter.ausKat = 'alle'; viewAusgaben(); };
+    $('#aCsv').onclick = () => {
+      const rows = [['Datum', 'Lieferant', 'Beschreibung', 'Kategorie', 'Betrag']].concat([...list].reverse().map(a => [dDE(a.datum), a.lieferant, a.beschreibung || '', a.kategorie, numIn(a.betrag)]));
+      const csv = '\uFEFF' + rows.map(z => z.map(v => '"' + String(v ?? '').replace(/"/g, '""') + '"').join(';')).join('\r\n');
+      download('Mediawo_Ausgaben_' + today() + '.csv', new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    };
+    $('#main').onclick = async e => {
+      const k = e.target.closest('[data-kat]'); if (k) { S.filter.ausKat = k.dataset.kat; return viewAusgaben(); }
+      if (e.target.closest('[data-aus-neu]')) return ausgabeDlg(null, viewAusgaben);
+      const ed = e.target.closest('[data-aus-e]'); if (ed) return ausgabeDlg(S.ausgaben.find(x => x.id === ed.dataset.ausE), viewAusgaben);
+      const del = e.target.closest('[data-aus-d]');
+      if (del) {
+        const a = S.ausgaben.find(x => x.id === del.dataset.ausD);
+        if (!await confirmDlg('Ausgabe löschen?', `${esc(a.lieferant)} vom ${dDE(a.datum)} über ${eur(a.betrag)} wird endgültig gelöscht.`, 'Löschen', true)) return;
+        await guard(async () => { await DB.deleteAusgabe(a.id); S.ausgaben = await DB.listAusgaben(); viewAusgaben(); ablageSyncSpaeter(); }, 'Ausgabe gelöscht');
+      }
+    };
+  }
+  function ausgabeDlg(a, done) {
+    a = a || { datum: today(), kategorie: 'Sonstiges', betrag: '' };
+    const kats = [...new Set([...AUS_KATS, ...S.ausgaben.map(x => x.kategorie)])];
+    openDlg(`<form id="af" class="dlg"><h2>${a.id ? 'Ausgabe bearbeiten' : 'Ausgabe erfassen'}</h2>
+      <div class="grid2" style="margin-top:16px">
+        <label class="f">Betrag in €<input name="betrag" inputmode="decimal" value="${a.betrag === '' ? '' : numIn(a.betrag)}" required placeholder="0,00"></label>
+        <label class="f">Datum<input type="date" name="datum" value="${a.datum}" required></label>
+        <label class="f span2">Wo / bei wem<input name="lieferant" value="${esc(a.lieferant)}" required placeholder="z. B. Amazon, Restaurant, Deutsche Bahn"></label>
+        <label class="f span2">Wofür (optional)<input name="beschreibung" value="${esc(a.beschreibung)}" placeholder="z. B. SD-Karten, Essen mit Kunde"></label>
+        <div class="f span2"><span>Kategorie</span><div class="chips">${kats.map(k => `<label class="chip"><input type="radio" name="kategorie" value="${esc(k)}" ${k === a.kategorie ? 'checked' : ''}>${esc(k)}</label>`).join('')}</div></div>
+      </div>
+      <p class="hint" style="margin-top:12px">Beleg bitte in Drive unter Mediawo_Buchhaltung/Belege ablegen.</p>
+      <div class="actions"><button type="button" class="btn" data-x>Abbrechen</button><button class="btn primary">Speichern</button></div></form>`);
+    dlg.querySelector('[data-x]').onclick = closeDlg;
+    $('#af').onsubmit = async e => {
+      e.preventDefault(); const fd = new FormData(e.target);
+      const o = { datum: fd.get('datum'), lieferant: fd.get('lieferant').trim(), beschreibung: fd.get('beschreibung').trim() || null, kategorie: fd.get('kategorie') || 'Sonstiges', betrag: r2(num(fd.get('betrag'))) };
+      if (o.betrag <= 0) { toast('Bitte einen Betrag größer als 0 eingeben.', true); return; }
+      if (a.id) o.id = a.id;
+      const ok = await guard(() => DB.saveAusgabe(o), 'Ausgabe gespeichert'); if (!ok) return;
+      closeDlg(); S.ausgaben = await DB.listAusgaben(); ablageSyncSpaeter(); done && done();
     };
   }
 

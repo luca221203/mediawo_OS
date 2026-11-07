@@ -10,7 +10,7 @@
   --ink:#151515; --muted:#6B6B6B; --line:#E4E4E1; --bg:#F5F5F3; --surface:#FFFFFF; --raised:#FFFFFF; --hover:#F5F5F3; --desk:#EDEDEA;
   --ok:#2E7D4F; --ok-wash:#E7F4EC; --ok-line:#BFE0CB;
   --warn:#9A5B00; --warn-wash:#FFF4E0;
-  --chart:#2F78B5; --chart-hover:#245F91;
+  --chart:#2F78B5; --chart-hover:#245F91; --chart2:#B8692E; --chart2-hover:#97541F;
   --h:40px; --h-sm:32px; --radius:10px;
   color-scheme:light;
 }
@@ -20,7 +20,7 @@
   --ink:#ECE9E6; --muted:#A39E99; --line:#34302E; --bg:#171514; --surface:#201D1C; --raised:#2A2625; --hover:#2D2928; --desk:#121110;
   --ok:#8FCFA5; --ok-wash:#1C2E23; --ok-line:#2F4D3A;
   --warn:#E7B66B; --warn-wash:#33281A;
-  --chart:#6AA5DC; --chart-hover:#8FBCE6;
+  --chart:#4F92D0; --chart-hover:#74AADD; --chart2:#C97A3C; --chart2-hover:#D99561;
   color-scheme:dark;
 }
 *{box-sizing:border-box}
@@ -275,3 +275,31 @@ td small.teil{display:block;color:var(--brand-text);font-size:12px}
 tr.inaktiv td{color:var(--muted)}
 table.list tfoot td{border-top:1px solid var(--line);padding-top:12px}
 @media (max-width:520px){.summary.two{grid-template-columns:1fr}.ptool{flex-direction:column;align-items:stretch}.pnav{justify-content:space-between}}
+
+/* Ausgaben: zweite Datenreihe, Karten, Chips */
+.lg-bar.aus{background:var(--chart2);margin-left:12px}
+.chart .b.aus{fill:var(--chart2)}
+.chart .col:hover .b.aus{fill:var(--chart2-hover)}
+.chart .tip .sum{border-top:1px solid var(--line);margin-top:4px;padding-top:4px}
+.cards2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
+.panel.mini{display:flex;flex-direction:column}
+.panel.mini h2{font-size:15px}
+.panel.mini .chart-head{margin-bottom:10px;align-items:baseline}
+.panel.mini .chart-head .muted{font-weight:600;font-variant-numeric:tabular-nums}
+.mini-list>div{display:grid;grid-template-columns:86px minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.mini-list>div.click{cursor:pointer}
+.mini-list>div.click:hover{background:var(--hover)}
+.mini-list .d{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+.mini-list .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mini-list .t small{display:block;color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis}
+.mini-list b{font-weight:600;font-variant-numeric:tabular-nums}
+.panel.mini .more{align-self:flex-start;margin-top:6px;padding:0}
+.empty.small{padding:18px 0;text-align:left}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px}
+.f .chips{margin:6px 0 0}
+.chip{display:inline-flex;align-items:center;height:var(--h-sm);padding:0 12px;border:1px solid var(--line);border-radius:16px;background:var(--raised);cursor:pointer;font-size:13px;font-weight:500;color:var(--muted)}
+.chip input{position:absolute;opacity:0;pointer-events:none}
+.chip[aria-pressed=true],.chip:has(input:checked){background:var(--brand-wash);border-color:var(--brand-line);color:var(--brand-text)}
+.chip:has(input:focus-visible){outline:2px solid var(--brand);outline-offset:2px}
+@media (max-width:960px){.cards2{grid-template-columns:1fr}}
+.panel.mini>.btn{align-self:flex-start}
