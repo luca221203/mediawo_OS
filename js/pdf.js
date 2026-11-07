@@ -144,12 +144,12 @@
   window.MWPDF = {
     zeichnen,
     async blob(md) { return (await zeichnen(md)).output('blob'); },
-    /* Dateiname und Unterordner für die Ablage */
+    /* Dateiname und Jahresordner für die Ablage: <PDF-Ordner>/<Jahr>/<Datei> */
     datei(art, r, m) {
       const jahr = (m ? m.datum : r.datum).slice(0, 4);
-      if (art === 'mahnung') return { jahr, ordner: 'Zahlungserinnerungen', name: `Zahlungserinnerung_${m.stufe}_${String(r.nummer).replace(/[^0-9A-Za-z-]/g, '')}_${kundeKurz(r.kunde_snapshot)}.pdf` };
-      if (art === 'storno') return { jahr, ordner: 'Stornorechnungen', name: `Stornorechnung_${String(r.nummer).replace(/[^0-9A-Za-z-]/g, '')}_${kundeKurz(r.kunde_snapshot)}.pdf` };
-      return { jahr, ordner: 'Rechnungen', name: `Rechnung_${String(r.nummer || 'Entwurf').replace(/[^0-9A-Za-z-]/g, '')}_${kundeKurz(r.kunde_snapshot)}.pdf` };
+      if (art === 'mahnung') return { jahr, name: `Zahlungserinnerung_${m.stufe}_${String(r.nummer).replace(/[^0-9A-Za-z-]/g, '')}_${kundeKurz(r.kunde_snapshot)}.pdf` };
+      if (art === 'storno') return { jahr, name: `Stornorechnung_${String(r.nummer).replace(/[^0-9A-Za-z-]/g, '')}_${kundeKurz(r.kunde_snapshot)}.pdf` };
+      return { jahr, name: `Rechnung_${String(r.nummer || 'Entwurf').replace(/[^0-9A-Za-z-]/g, '')}_${kundeKurz(r.kunde_snapshot)}.pdf` };
     }
   };
 })();

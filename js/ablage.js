@@ -1,5 +1,5 @@
 /* Zwei Ordner auf dem Rechner, wie bei IntegraSoma (nur Chrome/Edge, File System Access API):
-   PDF-Ablage:     <Ordner>/<Jahr>/Rechnungen|Stornorechnungen|Zahlungserinnerungen/*.pdf
+   PDF-Ablage:     <Ordner>/<Jahr>/Rechnung_… | Stornorechnung_… | Zahlungserinnerung_….pdf
    Datensicherung: <Ordner>/Mediawo-Sicherung-JJJJ-MM-TT.json und Mediawo-Sicherung-aktuell.json */
 (function () {
   const SUPPORTED = typeof window.showDirectoryPicker === 'function';
@@ -81,8 +81,8 @@
       await Promise.all([pdf.init(), backup.init()]);
       try { letzteSicherung = await kv('get', 'letzteSicherung') || null; } catch (e) { }
     },
-    existiertPdf(info) { return pdf.existiert([info.jahr, info.ordner], info.name); },
-    speicherePdf(info, blob) { return pdf.datei([info.jahr, info.ordner], info.name, blob); },
+    existiertPdf(info) { return pdf.existiert([info.jahr], info.name); },
+    speicherePdf(info, blob) { return pdf.datei([info.jahr], info.name, blob); },
     async sicherung(daten) {
       if (backup.state !== 'on') return false;
       const now = new Date();

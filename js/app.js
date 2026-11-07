@@ -138,9 +138,9 @@
   function ablagePanels() {
     const j = today().slice(0, 4);
     return `<div class="panel"><h2>PDF-Ablage</h2>
-        ${ordnerPanel(AB.pdf, 'pdf', `Beispiel: {n}/${j}/Rechnungen/Rechnung_${j}-009_Kunde.pdf`,
-          'Wählen Sie einmal einen Ordner, am besten in Google Drive (z. B. „MW_Buchhaltung/Belege“). Danach legt die App jede Rechnung, Stornorechnung und Zahlungserinnerung dort automatisch als PDF ab, sortiert nach Jahr und Belegart. Fehlende Belege werden beim Öffnen nachgeholt, auch die vom anderen Nutzer.',
-          'PDFs werden automatisch im Ordner {n} abgelegt, sortiert nach Jahr und Belegart.')}
+        ${ordnerPanel(AB.pdf, 'pdf', `Beispiel: {n}/${j}/Rechnung_${j}-009_Kunde.pdf`,
+          'Wählen Sie einmal einen Ordner, am besten in Google Drive (z. B. „Mediawo_Buchhaltung/Rechnungen“). Danach legt die App jede Rechnung, Stornorechnung und Zahlungserinnerung dort automatisch als PDF ab, sortiert nach Jahr. Fehlende Belege werden beim Öffnen nachgeholt, auch die vom anderen Nutzer.',
+          'PDFs werden automatisch im Ordner {n} abgelegt, sortiert nach Jahr.')}
         ${fehlend ? `<p class="note" style="margin-top:12px">${fehlend} Belege konnten nicht abgelegt werden.</p>` : ''}</div>
       <div class="panel"><h2>Datensicherung</h2>
         <p class="hint">Die Daten liegen in der Datenbank (Supabase). Zusätzlich schreibt die App nach jeder Änderung eine vollständige Sicherung in einen Ordner Ihrer Wahl. Pro Tag entsteht eine Datei, dazu immer eine aktuelle.</p>
@@ -281,7 +281,7 @@
     const box = (kind, head, sub) => { $('#saveWhere').innerHTML = `<div class="savebox ${kind}"><span class="ic">${{ ok: '✓', err: '!', info: 'i' }[kind]}</span><div><strong>${esc(head)}</strong>${sub ? `<span class="path">${esc(sub)}</span>` : ''}</div></div>`; };
     if (gespeichert && gespeichert.path) box('ok', 'Automatisch abgelegt', gespeichert.path + '/' + gespeichert.name);
     else if (gespeichert === null) box('err', 'Automatische Ablage hat nicht geklappt', AB.pdf.state === 'needs-permission' ? 'Bitte links „Ordner freigeben“ klicken. Die Datei wird dann nachgeholt.' : 'Bitte PDF herunterladen und von Hand ablegen.');
-    else if (AB.pdf.state === 'on') box('ok', 'Liegt in der PDF-Ablage', `${AB.pdf.name}/${info.jahr}/${info.ordner}/${info.name}`);
+    else if (AB.pdf.state === 'on') box('ok', 'Liegt in der PDF-Ablage', `${AB.pdf.name}/${info.jahr}/${info.name}`);
     else box('info', 'Keine PDF-Ablage eingerichtet', 'Unter Einstellungen einen Ordner wählen, dann wird jeder Beleg automatisch gespeichert.');
   }
   async function belegErstellt(md, titel, info) {
