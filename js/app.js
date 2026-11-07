@@ -56,14 +56,43 @@
   let aktuellerNutzer = null;
   async function zeigeApp(session) {
     if (!session) { aktuellerNutzer = null; $('#app').hidden = true; $('#login').hidden = false; return; }
-    if (aktuellerNutzer === session.user.email && !$('#app').hidden) return;
+    if (aktuellerNutzer === session.user.email && !$('#app').hidden) { linkPruefen(); return; }
     aktuellerNutzer = session.user.email;
     $('#login').hidden = true; $('#app').hidden = false;
     $('#userMail').textContent = session.user.email;
     $('#demoBadge').hidden = !DB.demo;
     await guard(laden);
     go(S.view);
+    linkPruefen();
   }
+  function linkPruefen() {
+    const typ = DB.linkTyp && DB.linkTyp();
+    if (typ === 'invite' || typ === 'recovery' || typ === 'signup') passwortDlg(true);
+  }
+  function passwortDlg(pflicht) {
+    openDlg(`<form id="pwf"><h2>${pflicht ? 'Passwort festlegen' : 'Passwort ändern'}</h2>
+      <p class="sub">${pflicht ? 'Lege jetzt dein Passwort fest. Damit meldest du dich künftig an.' : 'Mindestens 8 Zeichen.'}</p>
+      <div class="stack" style="gap:12px;margin-top:16px">
+        <label class="f">Neues Passwort<input type="password" name="p1" autocomplete="new-password" minlength="8" required></label>
+        <label class="f">Passwort wiederholen<input type="password" name="p2" autocomplete="new-password" minlength="8" required></label>
+      </div>
+      <div class="actions">${pflicht ? '' : '<button type="button" class="btn" data-x>Abbrechen</button>'}<button class="btn primary">Speichern</button></div></form>`);
+    const x = dlg.querySelector('[data-x]'); if (x) x.onclick = closeDlg;
+    dlg.oncancel = e => { if (pflicht) e.preventDefault(); };
+    $('#pwf').onsubmit = async e => {
+      e.preventDefault(); const fd = new FormData(e.target);
+      if (fd.get('p1') !== fd.get('p2')) { toast('Die Passwörter stimmen nicht überein.', true); return; }
+      const ok = await guard(async () => { await DB.passwortSetzen(fd.get('p1')); return true; }, 'Passwort gespeichert');
+      if (ok) { dlg.oncancel = null; closeDlg(); }
+    };
+  }
+  $('#pwChange').onclick = () => passwortDlg(false);
+  $('#pwForgot').onclick = async () => {
+    const email = $('#loginForm [name=email]').value.trim();
+    if (!email) { $('#loginErr').textContent = 'Bitte zuerst deine E-Mail-Adresse eintragen.'; return; }
+    try { await DB.passwortVergessen(email); $('#loginErr').textContent = ''; toast('Link zum Zurücksetzen wurde an ' + email + ' geschickt.'); }
+    catch (err) { $('#loginErr').textContent = fehlerText(err); }
+  };
   $('#loginForm').onsubmit = async e => {
     e.preventDefault();
     const fd = new FormData(e.target); $('#loginErr').textContent = '';

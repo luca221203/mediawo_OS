@@ -13,11 +13,19 @@
   /* ---------------- Supabase ---------------- */
   function supabaseDb() {
     const C = window.MW_CONFIG;
-    const sb = window.supabase.createClient(C.supabaseUrl, C.supabaseKey);
+    // Art des Links merken, bevor Supabase die Adresse aufräumt (Einladung / Passwort zurücksetzen)
+    const hash = new URLSearchParams(location.hash.slice(1));
+    let linkTyp = hash.get('type');
+    const sb = window.supabase.createClient(C.supabaseUrl, C.supabaseKey, { auth: { flowType: 'implicit' } });
     return {
       demo: false,
+      linkTyp() { const t = linkTyp; linkTyp = null; return t; },
       async session() { const { data } = await sb.auth.getSession(); return data.session; },
-      onAuth(cb) { sb.auth.onAuthStateChange((_e, s) => cb(s)); },
+      onAuth(cb) { sb.auth.onAuthStateChange((e, s) => { if (e === 'PASSWORD_RECOVERY') linkTyp = 'recovery'; cb(s); }); },
+      async passwortSetzen(pw) { const { error } = await sb.auth.updateUser({ password: pw }); fail(error); },
+      async passwortVergessen(email) {
+        const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname }); fail(error);
+      },
       async login(email, password) { const { error } = await sb.auth.signInWithPassword({ email, password }); fail(error); },
       async logout() { await sb.auth.signOut(); },
 
@@ -108,7 +116,10 @@
     const wait = v => new Promise(res => setTimeout(() => res(structuredClone(v)), 60));
     return {
       demo: true,
-      async session() { return session; },
+      linkTyp() { const t = new URLSearchParams(location.search).get('typ'); return t; },
+      async passwortSetzen() { return wait(null); },
+      async passwortVergessen() { return wait(null); },
+      async session() { return session || (new URLSearchParams(location.search).get('typ') ? (session = { user: { email: 'kai@media-wo.de' } }) : null); },
       onAuth(cb) { cbs.push(cb); },
       async login(email) { session = { user: { email: email || 'demo@media-wo.de' } }; cbs.forEach(c => c(session)); },
       async logout() { session = null; cbs.forEach(c => c(null)); },
