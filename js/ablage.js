@@ -70,10 +70,14 @@
           for await (const [name, h] of dir.entries()) {
             if (name.startsWith('.') || name.startsWith('~')) continue;
             if (h.kind === 'directory') { if (tiefe < 3) await lauf(h, pfad.concat(name), tiefe + 1); }
-            else if (!filter || filter(name)) { try { const f = await h.getFile(); out.push({ pfad: pfad.concat(name).join('/'), name, size: f.size, geaendert: f.lastModified }); } catch (e) { } }
+            else if (!filter || filter(name)) {
+              const e0 = { pfad: pfad.concat(name).join('/'), name, size: null, geaendert: 0 };
+              try { const f = await h.getFile(); e0.size = f.size; e0.geaendert = f.lastModified; } catch (e) { e0.fehler = e.name || 'Fehler'; console.warn('Beleg-Datei', name, e); }
+              out.push(e0);
+            }
           }
         }
-        try { await lauf(handle, [], 0); } catch (e) { fehler(e); }
+        try { await lauf(handle, [], 0); } catch (e) { console.warn('Belege-Ordner', e); fehler(e, true); out.fehler = (e && (e.name || e.message)) || 'Fehler'; }
         return out;
       },
       async lese(pfad) {

@@ -103,21 +103,26 @@
   let scanLaeuft = false;
   async function belegIgnoriert() { try { return new Set(await AB.kv('get', 'belegIgnoriert') || []); } catch (e) { return new Set(); } }
   async function belegeScannen() {
-    if (AB.belege.state !== 'on' || scanLaeuft) { S.belegNeu = []; belegZaehler(); return; }
+    if (scanLaeuft) return;
+    if (AB.belege.state !== 'on') { S.belegNeu = []; belegZaehler(); return; }
     scanLaeuft = true;
     try {
       const [dateien, ign] = await Promise.all([AB.belege.dateien(MWBELEG.istBeleg), belegIgnoriert()]);
       const bekannt = new Set(S.ausgaben.map(a => a.beleg_pfad).filter(Boolean));
       S.belegNeu = dateien.filter(f => !bekannt.has(f.pfad) && !ign.has(f.pfad)).sort((a, b) => b.geaendert - a.geaendert);
-    } catch (e) { console.warn('Belege', e); }
+      S.belegInfo = { zeit: new Date().toISOString(), gesamt: dateien.length, neu: S.belegNeu.length, fehler: dateien.fehler || (dateien.some(f => f.fehler) ? dateien.filter(f => f.fehler).length + ' Datei(en) nicht lesbar' : '') };
+    } catch (e) { console.warn('Belege', e); S.belegInfo = { zeit: new Date().toISOString(), gesamt: 0, neu: 0, fehler: e.name || e.message }; }
     scanLaeuft = false; belegZaehler();
     if (S.view === 'ausgaben' && !dlg.open) viewAusgaben();
+    if (S.view === 'einstellungen') { const a = $('#ablagePanels'); if (a) a.innerHTML = ablagePanels(); }
     if (S.view === 'start' && !dlg.open) { const k = $('#belegHinweis'); if (k) k.innerHTML = belegHinweis(); }
   }
   function belegZaehler() {
     const c = $('#navBelege'); if (c) { c.hidden = !S.belegNeu.length; c.textContent = S.belegNeu.length; c.title = S.belegNeu.length + ' neue Belege'; }
     renderSide();
   }
+  const belegStand = () => { const i = S.belegInfo; if (AB.belege.state !== 'on' || !i) return ''; return `Zuletzt durchsucht ${whenTxt(i.zeit)}: ${i.gesamt} ${i.gesamt === 1 ? 'Beleg' : 'Belege'} im Ordner, ${i.neu} neu${i.fehler ? ' · Problem: ' + esc(i.fehler) : ''}.`; };
+  document.addEventListener('click', e => { if (e.target.closest('[data-beleg-suchen]')) { toast('Belege-Ordner wird durchsucht …'); belegeScannen().then(() => toast(S.belegNeu.length ? S.belegNeu.length + ' neue Belege gefunden' : 'Keine neuen Belege gefunden')); } });
   const belegHinweis = () => S.belegNeu.length ? `<button class="belegbox" data-beleg-pruefen><b>${S.belegNeu.length} ${S.belegNeu.length === 1 ? 'neuer Beleg' : 'neue Belege'}</b> im Ordner ${esc(AB.belege.name)}<span>Jetzt prüfen →</span></button>` : '';
   let fokusTimer = null;
   window.addEventListener('focus', () => { clearTimeout(fokusTimer); fokusTimer = setTimeout(() => { if (S.firma && !dlg.open) belegeScannen(); }, 600); });
@@ -182,7 +187,8 @@
       <div class="panel"><h2>Belege-Ordner (Ausgaben)</h2>
         ${ordnerPanel(AB.belege, 'belege', 'Beispiel: {n}/' + j + '/Rechnung_Amazon.pdf',
           'Wählen Sie den Ordner, in den ihr Belege und Eingangsrechnungen legt (z. B. „Mediawo_Buchhaltung/Belege“). Die App erkennt neue PDFs und Fotos, liest Betrag, Datum und Lieferant aus und schlägt sie als Ausgabe vor. Belege, die ihr in der App anhängt, landen ebenfalls dort.',
-          'Neue Belege im Ordner {n} werden beim Öffnen der App erkannt' + (S.belegNeu.length ? ` (gerade ${S.belegNeu.length} neu)` : '') + '.')}</div>
+          'Neue Belege im Ordner {n} werden beim Öffnen der App erkannt.')}
+        ${AB.belege.state === 'on' ? `<p class="hint" style="margin:12px 0 0">${belegStand()} <button class="btn link small" data-beleg-suchen>Jetzt durchsuchen</button></p>` : ''}</div>
       <div class="panel"><h2>Datensicherung</h2>
         <p class="hint">Die Daten liegen in der Datenbank (Supabase). Zusätzlich schreibt die App nach jeder Änderung eine vollständige Sicherung in einen Ordner Ihrer Wahl. Pro Tag entsteht eine Datei, dazu immer eine aktuelle.</p>
         ${ordnerPanel(AB.backup, 'backup', 'Beispiel: {n}/Mediawo-Sicherung-' + today() + '.json',
@@ -898,7 +904,7 @@
     $('#main').innerHTML = `
       <div class="head"><div><h1>Ausgaben</h1><p class="sub">Alles, was nicht regelmäßig anfällt: Einkäufe, Essen, Fahrten, Werbung. Fixkosten stehen unter Einstellungen.</p></div>
         <div class="btn-row"><button class="btn" id="aCsv">CSV für EÜR</button><button class="btn primary" data-aus-neu>Neue Ausgabe</button></div></div>
-      ${belegHinweis()}
+      ${belegHinweis() || (AB.belege.state === 'on' ? `<p class="hint">${belegStand()} <button class="btn link small" data-beleg-suchen>Jetzt durchsuchen</button></p>` : '')}
       ${AB.supported && AB.belege.state !== 'on' ? `<p class="hint">Tipp: Unter <a href="#" data-go-settings>Einstellungen</a> den Belege-Ordner in Drive verbinden. Dann erkennt die App neue Belege automatisch.</p>` : ''}
       <div class="toolbar"><select id="aJahr">${opt('alle', 'Alle Jahre', fj)}${jahre.map(j => opt(j, j, fj)).join('')}</select></div>
       ${Object.keys(proKat).length ? `<div class="chips"><button class="chip" data-kat="alle" aria-pressed="${fk === 'alle'}">Alle · ${eur(Object.values(proKat).reduce((a, b) => a + b, 0))}</button>${Object.entries(proKat).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<button class="chip" data-kat="${esc(k)}" aria-pressed="${k === fk}">${esc(k)} · ${eur(v)}</button>`).join('')}</div>` : ''}
