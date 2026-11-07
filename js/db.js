@@ -66,7 +66,18 @@
       async setBezahlt(id, datum) {
         const { error } = await sb.from('rechnungen').update({ status: datum ? 'bezahlt' : 'offen', bezahlt_am: datum || null }).eq('id', id);
         fail(error);
-      }
+      },
+      /* Zahlungen (auch Teilzahlungen). Der Status der Rechnung folgt per Trigger in der Datenbank. */
+      async listZahlungen() { const { data, error } = await sb.from('zahlungen').select('*').order('datum').order('created_at'); fail(error); return data; },
+      async createZahlung(z) { const { data, error } = await sb.from('zahlungen').insert(z).select().single(); fail(error); return data; },
+      async deleteZahlung(id) { const { error } = await sb.from('zahlungen').delete().eq('id', id); fail(error); },
+      /* Fixkosten und Abos */
+      async listFixkosten() { const { data, error } = await sb.from('fixkosten').select('*').order('created_at'); fail(error); return data; },
+      async saveFixkosten(f) {
+        const q = f.id ? sb.from('fixkosten').update(f).eq('id', f.id) : sb.from('fixkosten').insert(f);
+        const { data, error } = await q.select().single(); fail(error); return data;
+      },
+      async deleteFixkosten(id) { const { error } = await sb.from('fixkosten').delete().eq('id', id); fail(error); }
     };
   }
 
@@ -92,7 +103,20 @@
       { id: uid(), name: 'Carousel-Slider', beschreibung: '', preis: 200, einheit: 'Stück', aktiv: true },
       { id: uid(), name: 'Imagefilm', beschreibung: 'Planung, Dreh und Schnitt', preis: 600, einheit: 'Stück', aktiv: true }
     ];
-    const rechnungen = [], mahnungen = [];
+    const rechnungen = [], mahnungen = [], zahlungen = [];
+    const fixkosten = [
+      { id: uid(), anbieter: 'Claude Team', zweck: 'KI-Assistent, 2 Plätze', kategorie: 'Software', betrag: 50, intervall: 'monatlich', aktiv: true, notiz: null, created_at: '2026-01-01' },
+      { id: uid(), anbieter: 'Google Workspace', zweck: 'E-Mail, Drive', kategorie: 'Software', betrag: 32.4, intervall: 'monatlich', aktiv: true, notiz: null, created_at: '2026-01-02' },
+      { id: uid(), anbieter: 'Markel Pro Media', zweck: 'Versicherung Medienbranche', kategorie: 'Versicherung', betrag: 246.33, intervall: 'jährlich', aktiv: true, notiz: 'fällig 13.07.', created_at: '2026-01-03' },
+      { id: uid(), anbieter: 'Sparkasse Trier', zweck: 'Kontoführung', kategorie: 'Bank', betrag: 9, intervall: 'monatlich', aktiv: true, notiz: null, created_at: '2026-01-04' },
+      { id: uid(), anbieter: 'IONOS', zweck: 'Domain media-wo.de', kategorie: 'Software', betrag: 1, intervall: 'monatlich', aktiv: true, notiz: null, created_at: '2026-01-05' }
+    ];
+    function statusNeu(rid) {
+      const r = rechnungen.find(x => x.id === rid); if (!r || r.typ !== 'rechnung' || r.status === 'storniert') return;
+      const zs = zahlungen.filter(z => z.rechnung_id === rid), sum = zs.reduce((a, z) => a + z.betrag, 0);
+      if (sum >= r.brutto - 0.005) { r.status = 'bezahlt'; r.bezahlt_am = zs.map(z => z.datum).sort().pop(); } else { r.status = 'offen'; r.bezahlt_am = null; }
+    }
+    function zahlung(r, datum, betrag, notiz) { zahlungen.push({ id: uid(), rechnung_id: r.id, datum, betrag, notiz: notiz || null, created_at: new Date().toISOString() }); statusNeu(r.id); }
     let counter = 8;
     let session = null; const cbs = [];
 
@@ -110,9 +134,16 @@
       };
       rechnungen.unshift(r); return r;
     }
+    const y0 = today.slice(0, 4) + '-01-01';
+    [[20, 650], [45, 400], [80, 1300], [120, 550], [150, 320], [200, 900], [240, 600], [270, 1100]].forEach(([t, b], i) => {
+      const d = addDays(y0, t); if (d > today) return;
+      const r = make(kunden[i % 2], d, [{ bezeichnung: i % 2 ? 'Imagefilm' : 'Social-Media-Reels', menge: 1, einzelpreis: b }]);
+      const zd = addDays(d, 9); if (zd <= today) zahlung(r, zd, b);
+    });
     const r1 = make(kunden[1], addDays(today, -40), [{ bezeichnung: 'Imagefilm', menge: 1, einzelpreis: 600 }]);
-    r1.status = 'bezahlt'; r1.bezahlt_am = addDays(today, -30);
-    make(kunden[0], addDays(today, -20), [{ bezeichnung: 'Social-Media-Reels', menge: 5, einzelpreis: 130 }, { bezeichnung: 'Carousel-Slider', menge: 2, einzelpreis: 200 }]);
+    zahlung(r1, addDays(today, -30), 600);
+    const r2 = make(kunden[0], addDays(today, -20), [{ bezeichnung: 'Social-Media-Reels', menge: 5, einzelpreis: 130 }, { bezeichnung: 'Carousel-Slider', menge: 2, einzelpreis: 200 }]);
+    zahlung(r2, addDays(today, -2), 300, 'Teilzahlung');
     make(kunden[0], addDays(today, -3), [{ bezeichnung: 'Long-Form-Video', menge: 1, einzelpreis: 250 }]);
 
     const wait = v => new Promise(res => setTimeout(() => res(structuredClone(v)), 60));
@@ -138,7 +169,7 @@
         const n = { aktiv: true, ...l, id: uid() }; leistungen.push(n); return wait(n);
       },
       async deleteLeistung(id) { leistungen.splice(leistungen.findIndex(x => x.id === id), 1); return wait(null); },
-      async listRechnungen() { return wait(rechnungen); },
+      async listRechnungen() { return wait([...rechnungen].sort((a, b) => b.datum.localeCompare(a.datum) || b.nummer.localeCompare(a.nummer))); },
       async listMahnungen() { return wait(mahnungen); },
       async createMahnung(m) { const n = { ...m, id: uid(), created_at: new Date().toISOString() }; mahnungen.push(n); return wait(n); },
       async createRechnung(p) {
@@ -162,7 +193,16 @@
         const r = rechnungen.find(x => x.id === id);
         if (r.status === 'storniert') throw new Error('Eine stornierte Rechnung kann nicht wieder geöffnet werden.');
         r.status = datum ? 'bezahlt' : 'offen'; r.bezahlt_am = datum || null; return wait(null);
-      }
+      },
+      async listZahlungen() { return wait(zahlungen); },
+      async createZahlung(z) { const r = rechnungen.find(x => x.id === z.rechnung_id); zahlung(r, z.datum, Number(z.betrag), z.notiz); return wait(zahlungen[zahlungen.length - 1]); },
+      async deleteZahlung(id) { const i = zahlungen.findIndex(x => x.id === id), rid = zahlungen[i].rechnung_id; zahlungen.splice(i, 1); statusNeu(rid); return wait(null); },
+      async listFixkosten() { return wait(fixkosten); },
+      async saveFixkosten(f) {
+        if (f.id) { Object.assign(fixkosten.find(x => x.id === f.id), f); return wait(f); }
+        const n = { aktiv: true, ...f, id: uid(), created_at: new Date().toISOString() }; fixkosten.push(n); return wait(n);
+      },
+      async deleteFixkosten(id) { fixkosten.splice(fixkosten.findIndex(x => x.id === id), 1); return wait(null); }
     };
   }
 

@@ -12,12 +12,16 @@
   const numIn = n => (Number(n) || 0).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false });
   const whenTxt = iso => { if (!iso) return ''; const d = new Date(iso), t = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }); return d.toDateString() === new Date().toDateString() ? 'heute ' + t : d.toLocaleDateString('de-DE') + ' ' + t; };
 
-  const S = { firma: null, kunden: [], leistungen: [], rechnungen: [], mahnungen: [], view: 'start', draft: null, filter: { jahr: 'alle', status: 'alle' } };
+  const S = { firma: null, kunden: [], leistungen: [], rechnungen: [], mahnungen: [], zahlungen: [], fixkosten: [], zOk: true, view: 'start', draft: null, filter: { jahr: 'alle', status: 'alle' }, periode: { art: 'jahr', ref: today() } };
 
   /* ---------- Hilfen ---------- */
   function toast(msg, err) { const t = $('#toast'); t.textContent = msg; t.className = err ? 'show err' : 'show'; clearTimeout(t._t); t._t = setTimeout(() => t.className = '', err ? 6000 : 2600); }
   function kundeName(k) { if (!k) return '–'; const p = [k.vorname, k.nachname].filter(Boolean).join(' '); return k.firma ? (k.firma + (p ? ' (' + p + ')' : '')) : (p || 'Ohne Namen'); }
   const mahnungenZu = r => S.mahnungen.filter(m => m.rechnung_id === r.id).sort((a, b) => a.stufe - b.stufe);
+  const zahlungenZu = r => S.zahlungen.filter(z => z.rechnung_id === r.id);
+  const gezahlt = (r, bis) => r2(zahlungenZu(r).filter(z => !bis || z.datum <= bis).reduce((a, z) => a + Number(z.betrag), 0));
+  const offenBetrag = r => r.typ === 'rechnung' && r.status === 'offen' ? Math.max(0, r2(Number(r.brutto) - gezahlt(r))) : 0;
+  const mahnModell = (r, m) => MWDOC.modellMahnung(r, m, gezahlt(r, m.datum));
   const faellig = r => { const ms = mahnungenZu(r); return ms.length ? ms[ms.length - 1].frist_bis : r.faellig_am; };
   function status(r) {
     if (r.typ === 'storno') return 'storno';
@@ -59,13 +63,19 @@
   async function laden() {
     const [firma, kunden, leistungen, rechnungen, mahnungen] = await Promise.all([DB.getFirma(), DB.listKunden(), DB.listLeistungen(), DB.listRechnungen(), DB.listMahnungen()]);
     Object.assign(S, { firma, kunden, leistungen, rechnungen, mahnungen });
+    /* Zahlungen und Fixkosten gibt es erst nach 03_zahlungen_fixkosten.sql. Bis dahin: bezahlte Rechnungen als je eine Zahlung werten. */
+    try { [S.zahlungen, S.fixkosten] = await Promise.all([DB.listZahlungen(), DB.listFixkosten()]); S.zOk = true; }
+    catch (e) {
+      console.warn('Zahlungen/Fixkosten', e); S.zOk = false; S.fixkosten = [];
+      S.zahlungen = rechnungen.filter(r => r.typ === 'rechnung' && r.status === 'bezahlt').map(r => ({ id: 'alt-' + r.id, rechnung_id: r.id, datum: r.bezahlt_am || r.datum, betrag: Number(r.brutto) }));
+    }
     ablageSyncSpaeter();
   }
 
   /* ---------- PDF-Ablage & Datensicherung ---------- */
   let syncLaeuft = false, syncNochmal = false, syncTimer = null, fehlend = 0;
   function ablageSyncSpaeter() { clearTimeout(syncTimer); syncTimer = setTimeout(ablageSync, 800); }
-  function sicherungsDaten() { return { firma: S.firma, kunden: S.kunden, leistungen: S.leistungen, rechnungen: S.rechnungen, mahnungen: S.mahnungen }; }
+  function sicherungsDaten() { return { firma: S.firma, kunden: S.kunden, leistungen: S.leistungen, rechnungen: S.rechnungen, mahnungen: S.mahnungen, zahlungen: S.zOk ? S.zahlungen : [], fixkosten: S.fixkosten }; }
   async function ablageSync() {
     if (!S.firma) return;
     if (syncLaeuft) { syncNochmal = true; return; }
@@ -74,8 +84,8 @@
       if (AB.backup.state === 'on') await AB.sicherung(sicherungsDaten());
       if (AB.pdf.state === 'on') {
         const jobs = [];
-        S.rechnungen.forEach(r => jobs.push({ info: MWPDF.datei(artVon(r), r), md: () => MWDOC.modellRechnung(r) }));
-        S.mahnungen.forEach(m => { const r = S.rechnungen.find(x => x.id === m.rechnung_id); if (r) jobs.push({ info: MWPDF.datei('mahnung', r, m), md: () => MWDOC.modellMahnung(r, m) }); });
+        S.rechnungen.filter(r => !r.importiert).forEach(r => jobs.push({ info: MWPDF.datei(artVon(r), r), md: () => MWDOC.modellRechnung(r) }));
+        S.mahnungen.forEach(m => { const r = S.rechnungen.find(x => x.id === m.rechnung_id); if (r) jobs.push({ info: MWPDF.datei('mahnung', r, m), md: () => mahnModell(r, m) }); });
         fehlend = 0;
         for (const j of jobs) {
           if (AB.pdf.state !== 'on') break;
@@ -225,9 +235,11 @@
   function menuAuf(btn, r) {
     const s = status(r), offen = s === 'offen' || s === 'ueberfaellig';
     const n = mahnungenZu(r).length;
-    const items = [['show', 'Ansehen'], ['pdf', 'PDF herunterladen']];
-    if (offen) items.push(['paid', 'Als bezahlt markieren', 'ok'], ['remind', (n ? (n + 1) + '. ' : '') + 'Zahlungserinnerung erstellen']);
-    if (s === 'bezahlt' && r.typ === 'rechnung') items.push(['unpaid', 'Zahlung zurücknehmen']);
+    const items = r.importiert ? [['original', 'Original in Drive öffnen']] : [['show', 'Ansehen'], ['pdf', 'PDF herunterladen']];
+    const nz = S.zOk ? zahlungenZu(r).length : 0;
+    if (offen) items.push([S.zOk ? 'pay' : 'paid', S.zOk ? 'Zahlung eintragen' : 'Als bezahlt markieren', 'ok'], ['remind', (n ? (n + 1) + '. ' : '') + 'Zahlungserinnerung erstellen']);
+    if (nz) items.push(['zahlungen', `Zahlungen ansehen (${nz})`]);
+    else if (!S.zOk && s === 'bezahlt' && r.typ === 'rechnung') items.push(['unpaid', 'Zahlung zurücknehmen']);
     n && items.push(['mahnungen', `Erinnerungen ansehen (${n})`]);
     if (offen || (s === 'bezahlt' && r.typ === 'rechnung')) items.push(['sep'], ['storno', 'Stornieren', 'danger']);
     menu.innerHTML = items.map(([a, l, c]) => a === 'sep' ? '<hr>' : `<button class="${c || ''}" data-act="${a}" data-id="${r.id}">${l}</button>`).join('');
@@ -244,9 +256,12 @@
   };
 
   async function aktion(a, r) {
+    if (a === 'original') { if (r.original_url) window.open(r.original_url, '_blank', 'noopener'); else toast('Kein Original hinterlegt.', true); return; }
     if (a === 'show') return zeigeBeleg(MWDOC.modellRechnung(r), (r.typ === 'storno' ? 'Stornorechnung ' : 'Rechnung ') + r.nummer, MWPDF.datei(artVon(r), r));
     if (a === 'pdf') return guard(async () => { const info = MWPDF.datei(artVon(r), r); download(info.name, await MWPDF.blob(MWDOC.modellRechnung(r))); });
     if (a === 'paid') return bezahltDlg(r);
+    if (a === 'pay') return zahlungDlg(r);
+    if (a === 'zahlungen') return zahlungenDlg(r);
     if (a === 'mahnungen') return mahnungenDlg(r);
     if (a === 'unpaid') {
       if (!await confirmDlg('Zahlung zurücknehmen?', `Rechnung ${esc(r.nummer)} wird wieder als offen geführt.`, 'Zurücknehmen')) return;
@@ -254,11 +269,11 @@
     }
     if (a === 'remind') {
       const stufe = mahnungenZu(r).length + 1, d = today(), frist = addDays(d, S.firma.mahnfrist_tage || 7);
-      if (!await confirmDlg((stufe > 1 ? stufe + '. ' : '') + 'Zahlungserinnerung erstellen?', `Für Rechnung <b>${esc(r.nummer)}</b> über ${eur(r.brutto)} wird eine Zahlungserinnerung mit heutigem Datum erstellt. Neue Zahlungsfrist: <b>${dDE(frist)}</b>.`, 'Erinnerung erstellen')) return;
+      if (!await confirmDlg((stufe > 1 ? stufe + '. ' : '') + 'Zahlungserinnerung erstellen?', `Für Rechnung <b>${esc(r.nummer)}</b> über ${eur(r.brutto)}${gezahlt(r) ? ` (offen ${eur(offenBetrag(r))})` : ''} wird eine Zahlungserinnerung mit heutigem Datum erstellt. Neue Zahlungsfrist: <b>${dDE(frist)}</b>.`, 'Erinnerung erstellen')) return;
       return guard(async () => {
         const m = await DB.createMahnung({ rechnung_id: r.id, stufe, datum: d, frist_bis: frist });
         await laden(); go(S.view);
-        await belegErstellt(MWDOC.modellMahnung(r, m), (stufe > 1 ? stufe + '. ' : '') + 'Zahlungserinnerung zu ' + r.nummer, MWPDF.datei('mahnung', r, m));
+        await belegErstellt(mahnModell(r, m), (stufe > 1 ? stufe + '. ' : '') + 'Zahlungserinnerung zu ' + r.nummer, MWPDF.datei('mahnung', r, m));
       });
     }
     if (a === 'storno') {
@@ -296,7 +311,7 @@
     openDlg(`<div class="dlg"><h2>Zahlungserinnerungen zu ${esc(r.nummer)}</h2><div class="list-simple">${ms.map(m => `<div><span>${m.stufe}. Erinnerung vom ${dDE(m.datum)} · Frist ${dDE(m.frist_bis)}</span><button class="btn small" data-m="${m.id}">Ansehen</button></div>`).join('')}</div>
       <div class="actions"><button class="btn" data-x>Schließen</button></div></div>`);
     dlg.querySelector('[data-x]').onclick = closeDlg;
-    dlg.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { const m = ms.find(x => x.id === b.dataset.m); zeigeBeleg(MWDOC.modellMahnung(r, m), m.stufe + '. Zahlungserinnerung zu ' + r.nummer, MWPDF.datei('mahnung', r, m)); });
+    dlg.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { const m = ms.find(x => x.id === b.dataset.m); zeigeBeleg(mahnModell(r, m), m.stufe + '. Zahlungserinnerung zu ' + r.nummer, MWPDF.datei('mahnung', r, m)); });
   }
   function bezahltDlg(r) {
     openDlg(`<form id="pf" class="dlg"><h2>Zahlung eintragen</h2><p class="sub">Rechnung ${esc(r.nummer)} über ${eur(r.brutto)}</p>
@@ -309,6 +324,40 @@
     };
   }
 
+  function zahlungDlg(r) {
+    const rest = offenBetrag(r), schon = gezahlt(r);
+    openDlg(`<form id="zf" class="dlg"><h2>Zahlung eintragen</h2><p class="sub">Rechnung ${esc(r.nummer)} über ${eur(r.brutto)}${schon ? ` · bereits bezahlt ${eur(schon)} · offen ${eur(rest)}` : ''}</p>
+      <div class="grid2" style="margin-top:16px">
+        <label class="f">Betrag in €<input name="b" inputmode="decimal" value="${numIn(rest)}" required></label>
+        <label class="f">Eingang am<input type="date" name="d" value="${today()}" max="${today()}" required></label>
+        <label class="f span2">Notiz (optional)<input name="n" placeholder="z. B. Teilzahlung, über Vollstreckung"></label>
+      </div>
+      <p class="hint" style="margin-top:12px">Weniger als offen = Teilzahlung, die Rechnung bleibt offen. Ab dem vollen Betrag gilt sie als bezahlt.</p>
+      <div class="actions"><button type="button" class="btn" data-x>Abbrechen</button><button class="btn primary">Speichern</button></div></form>`);
+    dlg.querySelector('[data-x]').onclick = closeDlg;
+    $('#zf').onsubmit = async e => {
+      e.preventDefault(); const fd = new FormData(e.target), b = r2(num(fd.get('b'))), d = fd.get('d'), n = fd.get('n').trim();
+      if (b <= 0) { toast('Bitte einen Betrag größer als 0 eingeben.', true); return; }
+      if (b > rest + 0.005 && !await confirmDlg('Mehr als offen?', `Offen sind ${eur(rest)}, eingetragen werden ${eur(b)}. Das passt z. B. bei Zinsen und Kosten aus einer Vollstreckung.`, 'Trotzdem speichern')) return;
+      closeDlg();
+      await guard(async () => { await DB.createZahlung({ rechnung_id: r.id, datum: d, betrag: b, notiz: n || null }); await laden(); go(S.view); },
+        b >= rest - 0.005 ? 'Zahlung eingetragen, Rechnung bezahlt' : 'Teilzahlung eingetragen');
+    };
+  }
+  function zahlungenDlg(r) {
+    const zs = zahlungenZu(r), sum = gezahlt(r);
+    openDlg(`<div class="dlg"><h2>Zahlungen zu ${esc(r.nummer)}</h2><p class="sub">Rechnung über ${eur(r.brutto)} · bezahlt ${eur(sum)}${offenBetrag(r) ? ` · offen ${eur(offenBetrag(r))}` : ''}</p>
+      <div class="list-simple" style="margin-top:14px">${zs.map(z => `<div><span>${dDE(z.datum)} · <b>${eur(z.betrag)}</b>${z.notiz ? ` <span class="muted">· ${esc(z.notiz)}</span>` : ''}</span><button class="btn small danger" data-z="${z.id}">Entfernen</button></div>`).join('')}</div>
+      <div class="actions">${offenBetrag(r) ? '<button class="btn" data-pay>Weitere Zahlung</button>' : ''}<button class="btn" data-x>Schließen</button></div></div>`);
+    dlg.querySelector('[data-x]').onclick = closeDlg;
+    const p = dlg.querySelector('[data-pay]'); if (p) p.onclick = () => zahlungDlg(r);
+    dlg.querySelectorAll('[data-z]').forEach(b => b.onclick = async () => {
+      const z = zs.find(x => x.id === b.dataset.z);
+      if (!await confirmDlg('Zahlung entfernen?', `Die Zahlung vom ${dDE(z.datum)} über ${eur(z.betrag)} wird gelöscht. Nur für Tippfehler gedacht.`, 'Entfernen', true)) return;
+      await guard(async () => { await DB.deleteZahlung(z.id); await laden(); go(S.view); }, 'Zahlung entfernt');
+    });
+  }
+
   /* ---------- Rechnungstabelle ---------- */
   function rechnungTabelle(list) {
     return `<div class="table-wrap"><table class="list"><thead><tr><th>Nummer</th><th>Datum</th><th>Kunde</th><th class="num">Betrag</th><th>Status</th><th>Fällig / bezahlt</th><th class="col-menu"></th></tr></thead><tbody>
@@ -319,8 +368,9 @@
         else if (s === 'storniert') info = `<small>storniert durch</small>${esc((S.rechnungen.find(x => x.id === r.storniert_durch) || {}).nummer || '')}`;
         else if (s === 'storno') info = `<small>storniert</small>${esc((S.rechnungen.find(x => x.id === r.storno_von) || {}).nummer || '')}`;
         else info = `<small>fällig am</small>${dDE(faellig(r))}${n ? `<small>${n}× erinnert</small>` : ''}`;
+        const teil = (s === 'offen' || s === 'ueberfaellig') && gezahlt(r) > 0;
         return `<tr><td class="nowrap">${esc(r.nummer)}</td><td class="nowrap">${dDE(r.datum)}</td><td>${esc(kundeName(r.kunde_snapshot))}</td>
-          <td class="num">${eur(r.brutto)}</td><td>${badge(s)}</td><td><div class="due ${s === 'ueberfaellig' ? 'late' : ''}">${info}</div></td>
+          <td class="num">${eur(r.brutto)}${teil ? `<small class="teil">offen ${eur(offenBetrag(r))}</small>` : ''}</td><td>${badge(s)}</td><td><div class="due ${s === 'ueberfaellig' ? 'late' : ''}">${info}</div></td>
           <td class="col-menu"><button class="icon-btn" data-menu="${r.id}" aria-label="Aktionen für ${esc(r.nummer)}" title="Aktionen">⋯</button></td></tr>`;
       }).join('')}</tbody></table></div>`;
   }
@@ -333,34 +383,154 @@
     };
   }
 
-  /* ---------- Übersicht ---------- */
+  /* ---------- Übersicht: Jahr → Monat → Woche ---------- */
+  const MON = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+  const TAG = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+  const U = iso => new Date(iso + 'T00:00:00Z');
+  const isoU = d => d.toISOString().slice(0, 10);
+  const plusU = (iso, n) => { const d = U(iso); d.setUTCDate(d.getUTCDate() + n); return isoU(d); };
+  const montag = iso => plusU(iso, -((U(iso).getUTCDay() + 6) % 7));
+  const tageZw = (a, b) => Math.round((U(b) - U(a)) / 864e5) + 1;
+  function kw(iso) { const d = U(iso); d.setUTCDate(d.getUTCDate() + 3 - (d.getUTCDay() + 6) % 7); const j = new Date(Date.UTC(d.getUTCFullYear(), 0, 4)); return 1 + Math.round(((d - j) / 864e5 - 3 + (j.getUTCDay() + 6) % 7) / 7); }
+  const ddmm = iso => iso.slice(8, 10) + '.' + iso.slice(5, 7) + '.';
+  const monatsEnde = (y, m) => isoU(new Date(Date.UTC(y, m + 1, 0)));
+
+  /* Fixkosten: alles auf Monatsbasis, Jahresbeträge anteilig */
+  const fixMonat = f => Number(f.betrag) / ({ monatlich: 1, quartalsweise: 3, 'jährlich': 12 }[f.intervall] || 1);
+  const fixProMonat = () => r2(S.fixkosten.filter(f => f.aktiv).reduce((a, f) => a + fixMonat(f), 0));
+  function fixFuer(art, von, bis) {
+    const m = fixProMonat();
+    if (art === 'jahr') return m * 12;
+    if (art === 'monat') return m;
+    if (art === 'woche' && tageZw(von, bis) === 7) return m * 12 / 52;
+    return m * 12 / 365 * tageZw(von, bis);
+  }
+
+  function periode(art, ref) {
+    const y = +ref.slice(0, 4), mo = +ref.slice(5, 7) - 1;
+    if (art === 'jahr') return { art, von: y + '-01-01', bis: y + '-12-31', titel: String(y),
+      teile: MON.map((n, i) => { const v = `${y}-${String(i + 1).padStart(2, '0')}-01`; return { art: 'monat', von: v, bis: monatsEnde(y, i), kurz: n.slice(0, 3), lang: n + ' ' + y }; }) };
+    if (art === 'monat') {
+      const von = ref.slice(0, 8) + '01', bis = monatsEnde(y, mo), teile = [];
+      for (let w = montag(von); w <= bis; w = plusU(w, 7)) {
+        const a = w < von ? von : w, b = plusU(w, 6) > bis ? bis : plusU(w, 6);
+        teile.push({ art: 'woche', von: a, bis: b, ref: w, kurz: 'KW ' + kw(w), lang: `KW ${kw(w)} · ${ddmm(a)}–${ddmm(b)}${tageZw(a, b) < 7 ? ' (anteilig)' : ''}` });
+      }
+      return { art, von, bis, titel: MON[mo] + ' ' + y, teile };
+    }
+    const von = montag(ref), bis = plusU(von, 6);
+    return { art, von, bis, titel: `KW ${kw(von)} · ${dDE(von)} – ${dDE(bis)}`,
+      teile: TAG.map((t, i) => { const d = plusU(von, i); return { art: 'tag', von: d, bis: d, kurz: t + ' ' + ddmm(d), lang: t + ', ' + dDE(d) }; }) };
+  }
+  function verschieben(p, n) {
+    if (p.art === 'jahr') return (+p.ref.slice(0, 4) + n) + p.ref.slice(4, 8) + '01';
+    if (p.art === 'monat') { const d = U(p.ref.slice(0, 8) + '01'); d.setUTCMonth(d.getUTCMonth() + n); return isoU(d); }
+    return plusU(montag(p.ref), 7 * n);
+  }
+  const imZeitraum = (iso, von, bis) => iso >= von && iso <= bis;
+  const summeZ = (von, bis) => r2(S.zahlungen.filter(z => imZeitraum(z.datum, von, bis)).reduce((a, z) => a + Number(z.betrag), 0));
+
   function viewStart() {
-    const j = String(new Date().getFullYear());
-    const imJahr = S.rechnungen.filter(r => r.datum.startsWith(j));
-    const umsatz = r2(imJahr.reduce((a, r) => a + Number(r.brutto), 0));
-    const eingang = r2(S.rechnungen.filter(r => r.typ === 'rechnung' && r.status === 'bezahlt' && (r.bezahlt_am || '').startsWith(j)).reduce((a, r) => a + Number(r.brutto), 0));
+    const P = S.periode, pr = periode(P.art, P.ref), heute = today();
+    const zs = S.zahlungen.filter(z => imZeitraum(z.datum, pr.von, pr.bis)).sort((a, b) => b.datum.localeCompare(a.datum));
+    const eingang = r2(zs.reduce((a, z) => a + Number(z.betrag), 0));
+    const fix = r2(fixFuer(pr.art, pr.von, pr.bis)), fm = fixProMonat();
+    const ergebnis = r2(eingang - fix), deckung = fix ? Math.round(eingang / fix * 100) : 0;
+    const rs = S.rechnungen.filter(r => imZeitraum(r.datum, pr.von, pr.bis));
+    const umsatz = r2(rs.reduce((a, r) => a + Number(r.brutto), 0));
     const offen = S.rechnungen.filter(r => r.typ === 'rechnung' && r.status === 'offen');
-    const offenSum = r2(offen.reduce((a, r) => a + Number(r.brutto), 0));
-    const ue = offen.filter(r => status(r) === 'ueberfaellig');
-    const ueSum = r2(ue.reduce((a, r) => a + Number(r.brutto), 0));
-    const G = C.grenzeVorjahr, pct = Math.min(100, umsatz / G * 100), rest = G - umsatz;
-    const cls = pct >= 90 ? 'crit' : pct >= 70 ? 'warn' : '';
+    const offenSum = r2(offen.reduce((a, r) => a + offenBetrag(r), 0));
+    const ue = offen.filter(r => status(r) === 'ueberfaellig'), ueSum = r2(ue.reduce((a, r) => a + offenBetrag(r), 0));
+    const j = heute.slice(0, 4), umsatzJ = r2(S.rechnungen.filter(r => r.datum.startsWith(j)).reduce((a, r) => a + Number(r.brutto), 0));
+    const G = C.grenzeVorjahr, pct = Math.min(100, umsatzJ / G * 100), rest = G - umsatzJ, cls = pct >= 90 ? 'crit' : pct >= 70 ? 'warn' : '';
+    const laeuft = imZeitraum(heute, pr.von, pr.bis);
+    const kunde = id => { const r = S.rechnungen.find(x => x.id === id); return r ? r : {}; };
+
     $('#main').innerHTML = `
-      <div class="head"><div><h1>Übersicht</h1><p class="sub">${esc(S.firma.marke)} · Geschäftsjahr ${j}</p></div>
+      <div class="head"><div><h1>Übersicht</h1><p class="sub">${esc(S.firma.marke)} · Einnahmen und Fixkosten</p></div>
         <button class="btn primary" data-go="neu">Neue Rechnung</button></div>
+      ${S.zOk ? '' : '<p class="note">Zahlungen und Fixkosten sind noch nicht eingerichtet. Bitte einmal <b>03_zahlungen_fixkosten.sql</b> im Supabase SQL Editor ausführen. Bis dahin zählt jede bezahlte Rechnung als eine Zahlung, Fixkosten fehlen.</p>'}
+      <div class="ptool">
+        <div class="seg" role="group" aria-label="Zeitraum">${['jahr', 'monat', 'woche'].map(a => `<button data-p-art="${a}" aria-pressed="${a === pr.art}">${{ jahr: 'Jahr', monat: 'Monat', woche: 'Woche' }[a]}</button>`).join('')}</div>
+        <div class="pnav"><button class="btn icon" data-p-nav="-1" aria-label="Zurück">‹</button><strong>${esc(pr.titel)}</strong><button class="btn icon" data-p-nav="1" aria-label="Weiter">›</button>
+          ${laeuft ? '' : '<button class="btn small" data-p-heute>Heute</button>'}</div>
+      </div>
       <div class="summary">
-        <div><span class="l">Rechnungsumsatz ${j}</span><span class="v">${eur(umsatz)}</span><span class="s">${imJahr.filter(r => r.typ === 'rechnung').length} Rechnungen</span></div>
-        <div><span class="l">Bezahlt eingegangen ${j}</span><span class="v ok">${eur(eingang)}</span><span class="s">${umsatz ? Math.round(eingang / umsatz * 100) : 0} % vom Umsatz</span></div>
-        <div class="${ue.length ? 'alert' : ''}"><span class="l">Offen</span><span class="v">${eur(offenSum)}</span><span class="s">${offen.length} Rechnungen${ue.length ? ` · ${ue.length} überfällig (${eur(ueSum)})` : ''}</span></div>
-        <div><span class="l">Kleinunternehmergrenze</span><span class="v">${Math.round(pct)} %</span><div class="bar ${cls}"><i style="width:${pct}%"></i></div>
+        <div><span class="l">Eingegangen</span><span class="v">${eur(eingang)}</span><span class="s">${zs.length} ${zs.length === 1 ? 'Zahlung' : 'Zahlungen'} ${{ jahr: 'im Jahr', monat: 'im Monat', woche: 'in der Woche' }[pr.art]}</span></div>
+        <div><span class="l">Fixkosten</span><span class="v">${eur(fix)}</span><span class="s">${eur(fm)} pro Monat · ${S.fixkosten.filter(f => f.aktiv).length} Posten</span></div>
+        <div class="${ergebnis < 0 ? 'alert' : ''}"><span class="l">${ergebnis < 0 ? 'Fehlt noch' : 'Über den Fixkosten'}</span><span class="v ${ergebnis >= 0 ? 'ok' : ''}">${eur(Math.abs(ergebnis))}</span>
+          <div class="bar ${deckung >= 100 ? '' : 'crit'}"><i style="width:${Math.min(100, deckung)}%"></i></div><span class="s">${fix ? deckung + ' % der Fixkosten gedeckt' : 'Keine Fixkosten hinterlegt'}</span></div>
+        <div><span class="l">Rechnungsumsatz</span><span class="v">${eur(umsatz)}</span><span class="s">${rs.filter(r => r.typ === 'rechnung').length} Rechnungen geschrieben</span></div>
+      </div>
+      <div class="panel chart-panel">
+        <div class="chart-head"><h2>Eingänge ${pr.art === 'jahr' ? 'pro Monat' : pr.art === 'monat' ? 'pro Woche' : 'pro Tag'}</h2>
+          <span class="legend"><i class="lg-bar"></i>Eingegangen <i class="lg-line"></i>Fixkosten${pr.art === 'woche' ? ' pro Tag' : pr.art === 'monat' ? ' pro Woche' : ' pro Monat'}</span></div>
+        <div id="chart" class="chart"></div>
+        ${pr.art !== 'woche' ? `<p class="hint" style="margin:8px 0 0">Balken anklicken, um ${pr.art === 'jahr' ? 'den Monat' : 'die Woche'} zu öffnen. Jahresbeiträge (z. B. Versicherung) sind auf die Monate verteilt.</p>` : ''}
+      </div>
+      <div class="summary two">
+        <div class="${ue.length ? 'alert' : ''}"><span class="l">Offen (alle Rechnungen)</span><span class="v">${eur(offenSum)}</span><span class="s">${offen.length} Rechnungen${ue.length ? ` · ${ue.length} überfällig (${eur(ueSum)})` : ''}</span></div>
+        <div><span class="l">Kleinunternehmergrenze ${j}</span><span class="v">${Math.round(pct)} %</span><div class="bar ${cls}"><i style="width:${pct}%"></i></div>
           <span class="s">${rest > 0 ? `noch ${eur(rest)} bis ${eur(G)}` : `${eur(G)} überschritten`}</span></div>
       </div>
       ${pct >= 70 ? `<p class="note">Liegt der Umsatz ${j} über ${eur(G)}, gilt ab 1. Januar ${+j + 1} die Kleinunternehmerregelung nicht mehr. Über ${eur(C.grenzeLaufend)} im laufenden Jahr endet sie sofort. Rechtzeitig steuerlich klären und den Wechsel zu lexoffice planen.</p>` : ''}
+      <h2 class="section">Zahlungseingänge · ${esc(pr.titel)}</h2>
+      ${zs.length ? `<div class="table-wrap"><table class="list"><thead><tr><th>Datum</th><th>Rechnung</th><th>Kunde</th><th>Notiz</th><th class="num">Betrag</th></tr></thead><tbody>
+        ${zs.map(z => { const r = kunde(z.rechnung_id); return `<tr><td class="nowrap">${dDE(z.datum)}</td><td class="nowrap">${esc(r.nummer || '')}</td><td>${esc(kundeName(r.kunde_snapshot))}</td><td class="muted">${esc(z.notiz || '')}</td><td class="num">${eur(z.betrag)}</td></tr>`; }).join('')}
+        </tbody></table></div>` : '<div class="table-wrap"><p class="empty">Keine Zahlungseingänge in diesem Zeitraum.</p></div>'}
       <h2 class="section">Offene Rechnungen</h2>
       ${offen.length ? rechnungTabelle([...offen].sort((a, b) => faellig(a).localeCompare(faellig(b)))) : '<div class="table-wrap"><p class="empty">Keine offenen Rechnungen.</p></div>'}`;
     bindTabelle();
+    const tab = $('#main').onclick;
+    $('#main').onclick = e => {
+      const a = e.target.closest('[data-p-art]'), n = e.target.closest('[data-p-nav]'), h = e.target.closest('[data-p-heute]'), bar = e.target.closest('[data-drill]');
+      if (a) { P.art = a.dataset.pArt; if (!imZeitraum(P.ref, pr.von, pr.bis)) P.ref = pr.von; if (imZeitraum(heute, pr.von, pr.bis)) P.ref = heute; return viewStart(); }
+      if (n) { P.ref = verschieben({ art: pr.art, ref: P.ref }, +n.dataset.pNav); return viewStart(); }
+      if (h) { P.ref = heute; return viewStart(); }
+      if (bar) { const t = pr.teile[+bar.dataset.drill]; P.art = t.art; P.ref = t.ref || t.von; return viewStart(); }
+      tab(e);
+    };
     $('[data-go=neu]').addEventListener('click', () => go('neu'));
+    zeichneChart(pr);
   }
+
+  /* Balken: Eingänge je Teilzeitraum, gestrichelte Linie: Fixkosten je Teilzeitraum */
+  function zeichneChart(pr) {
+    const box = $('#chart'); if (!box) return;
+    const W = Math.max(300, box.clientWidth), H = 240, L = 58, R = 12, T = 14, B = 30, heute = today();
+    const daten = pr.teile.map(t => ({ ...t, ein: summeZ(t.von, t.bis), fix: r2(fixFuer(t.art, t.von, t.bis)), zukunft: t.von > heute, jetzt: imZeitraum(heute, t.von, t.bis) }));
+    const ref = pr.art === 'monat' ? fixFuer('woche', '2000-01-03', '2000-01-09') : pr.art === 'woche' ? fixFuer('tag', '2000-01-03', '2000-01-03') : fixFuer('monat');
+    const max = Math.max(ref * 1.15, ...daten.map(d => d.ein), 10);
+    const schritt = [10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000].find(s => max / s <= 4) || 20000;
+    const top = Math.ceil(max * 1.08 / schritt) * schritt, y = v => T + (H - T - B) * (1 - v / top);
+    const bw = (W - L - R) / daten.length, bar = Math.min(44, bw * 0.56);
+    const kurzEur = v => v >= 1000 ? (v / 1000).toLocaleString('de-DE', { maximumFractionDigits: 1 }) + ' T€' : Math.round(v) + ' €';
+    let g = '';
+    for (let v = 0; v <= top + 0.01; v += schritt) g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="grid"/><text x="${L - 8}" y="${y(v) + 4}" class="ax" text-anchor="end">${kurzEur(v)}</text>`;
+    const bars = daten.map((d, i) => {
+      const x = L + i * bw + (bw - bar) / 2, h = Math.max(0, y(0) - y(d.ein)), rr = Math.min(4, h);
+      const path = h > 0 ? `<path class="b" d="M${x},${y(0)} v${-(h - rr)} q0,${-rr} ${rr},${-rr} h${bar - 2 * rr} q${rr},0 ${rr},${rr} v${h - rr} z"/>` : '';
+      return `<g class="col${d.zukunft ? ' fut' : ''}${d.jetzt ? ' now' : ''}" data-i="${i}" ${pr.art !== 'woche' ? `data-drill="${i}"` : ''}>
+        <rect class="hit" x="${L + i * bw}" y="${T}" width="${bw}" height="${H - T - B + 24}"/>${path}
+        <text x="${L + i * bw + bw / 2}" y="${H - 10}" class="ax${d.jetzt ? ' cur' : ''}" text-anchor="middle">${esc(bw >= 64 ? d.kurz : pr.art === 'jahr' ? (bw >= 30 ? d.kurz.slice(0, 3) : d.kurz[0]) : pr.art === 'monat' ? d.kurz.replace('KW ', '') : d.kurz.slice(0, 2))}</text></g>`;
+    }).join('');
+    const ly = y(ref);
+    box.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Eingänge ${esc(pr.titel)}">${g}${bars}
+      ${ref > 0 ? `<line x1="${L}" x2="${W - R}" y1="${ly}" y2="${ly}" class="ref"/><text x="${W - R}" y="${ly - 6}" class="ax ref-t" text-anchor="end">${eur(ref)}</text>` : ''}</svg><div class="tip" hidden></div>`;
+    const tip = box.querySelector('.tip');
+    box.querySelectorAll('.col').forEach(c => {
+      const d = daten[+c.dataset.i];
+      c.addEventListener('mouseenter', () => {
+        const diff = r2(d.ein - d.fix);
+        tip.innerHTML = `<strong>${esc(d.lang)}</strong><div><span>Eingegangen</span><b>${eur(d.ein)}</b></div><div><span>Fixkosten</span><b>${eur(d.fix)}</b></div><div><span>${diff < 0 ? 'Fehlt' : 'Darüber'}</span><b>${eur(Math.abs(diff))}</b></div>`;
+        tip.hidden = false;
+        const x = L + (+c.dataset.i + 0.5) * bw; tip.style.left = Math.min(W - tip.offsetWidth - 4, Math.max(4, x - tip.offsetWidth / 2)) + 'px';
+        tip.style.top = Math.max(0, y(Math.max(d.ein, ref)) - tip.offsetHeight - 10) + 'px';
+      });
+      c.addEventListener('mouseleave', () => { tip.hidden = true; });
+    });
+  }
+  window.addEventListener('resize', () => { if (S.view === 'start' && S.firma) { clearTimeout(window._rz); window._rz = setTimeout(() => zeichneChart(periode(S.periode.art, S.periode.ref)), 150); } });
 
   /* ---------- Rechnungen ---------- */
   function viewRechnungen() {
@@ -385,9 +555,9 @@
     bindTabelle();
   }
   function csvExport(list) {
-    const rows = [['Nummer', 'Typ', 'Datum', 'Leistungsdatum', 'Kunde', 'Land', 'Netto', 'MwSt', 'Brutto', 'Status', 'Bezahlt am']];
+    const rows = [['Nummer', 'Typ', 'Datum', 'Leistungsdatum', 'Kunde', 'Land', 'Netto', 'MwSt', 'Brutto', 'Gezahlt', 'Status', 'Bezahlt am']];
     [...list].sort((a, b) => a.nummer.localeCompare(b.nummer)).forEach(r => rows.push([r.nummer, r.typ === 'storno' ? 'Storno' : 'Rechnung', dDE(r.datum), dDE(r.leistungsdatum),
-      kundeName(r.kunde_snapshot), (r.kunde_snapshot || {}).land || '', numIn(r.netto), numIn(r.mwst), numIn(r.brutto), STATUS_TXT[status(r)], dDE(r.bezahlt_am)]));
+      kundeName(r.kunde_snapshot), (r.kunde_snapshot || {}).land || '', numIn(r.netto), numIn(r.mwst), numIn(r.brutto), r.typ === 'rechnung' ? numIn(gezahlt(r)) : '', STATUS_TXT[status(r)], dDE(r.bezahlt_am)]));
     const csv = '﻿' + rows.map(z => z.map(v => '"' + String(v ?? '').replace(/"/g, '""') + '"').join(';')).join('\r\n');
     download('Mediawo_Rechnungen_' + today() + '.csv', new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   }
@@ -624,6 +794,7 @@
       <div class="stack">
         <div class="stack" id="ablagePanels">${ablagePanels()}</div>
         <div class="panel"><h2>Darstellung</h2><div class="btn-row">${themeButtons()}</div></div>
+        <div class="panel" id="fixPanel">${fixPanel()}</div>
         <form id="ff" class="stack">
           <div class="panel"><h2>Firma</h2><div class="grid2">
             ${i('name', 'Firmenname')}${i('marke', 'Marke')}${i('inhaber', 'Inhaber (Grußzeile)', 'span2')}
@@ -641,6 +812,16 @@
         </form>
       </div>`;
     $('#csvAll').onclick = () => csvExport(S.rechnungen);
+    $('#main').onclick = async e => {
+      if (e.target.closest('#fxNeu')) return fixDlg(null);
+      const ed = e.target.closest('[data-fx-e]'), del = e.target.closest('[data-fx-d]');
+      if (ed) fixDlg(S.fixkosten.find(f => f.id === ed.dataset.fxE));
+      if (del) {
+        const f = S.fixkosten.find(x => x.id === del.dataset.fxD);
+        if (!await confirmDlg('Posten löschen?', `„${esc(f.anbieter)}“ wird aus den Fixkosten entfernt. Wenn der Vertrag nur pausiert, besser „aktiv“ ausschalten.`, 'Löschen', true)) return;
+        await guard(async () => { await DB.deleteFixkosten(f.id); S.fixkosten = await DB.listFixkosten(); $('#fixPanel').innerHTML = fixPanel(); ablageSyncSpaeter(); }, 'Posten gelöscht');
+      }
+    };
     $('#ff').onsubmit = async e => {
       e.preventDefault(); const fd = new FormData(e.target), o = {};
       for (const [k, v] of fd.entries()) o[k] = String(v).trim();
@@ -648,6 +829,45 @@
       ['mwst_satz', 'zahlungsziel_tage', 'mahnfrist_tage'].forEach(k => o[k] = num(o[k]));
       if (!o.kleinunternehmer && S.firma.kleinunternehmer && !(await confirmDlg('Kleinunternehmerregelung ausschalten?', 'Neue Rechnungen enthalten dann ' + o.mwst_satz + ' % Umsatzsteuer. Nur ausschalten, wenn ihr umsatzsteuerpflichtig seid.', 'Ausschalten', true))) return;
       await guard(async () => { await DB.saveFirma(o); S.firma = await DB.getFirma(); ablageSyncSpaeter(); }, 'Firmendaten gespeichert');
+    };
+  }
+
+  /* ---------- Fixkosten & Abos ---------- */
+  const INTERVALLE = [['monatlich', 'Monatlich'], ['quartalsweise', 'Vierteljährlich'], ['jährlich', 'Jährlich']];
+  function fixPanel() {
+    if (!S.zOk) return `<h2>Fixkosten & Abos</h2><p class="note" style="margin:0">Noch nicht eingerichtet. Bitte einmal <b>03_zahlungen_fixkosten.sql</b> im Supabase SQL Editor ausführen und die App neu laden.</p>`;
+    const fm = fixProMonat(), ivTxt = v => (INTERVALLE.find(x => x[0] === v) || [, v])[1];
+    return `<div class="chart-head"><div><h2 style="margin:0">Fixkosten & Abos</h2><p class="hint" style="margin:4px 0 0">Laufende Kosten, die jeden Monat gedeckt sein müssen. Grundlage für die Übersicht. Auch Entnahmen oder ein Monatsziel lassen sich hier als Posten anlegen.</p></div>
+        <button class="btn" id="fxNeu">+ Posten</button></div>
+      ${S.fixkosten.length ? `<div class="table-wrap" style="margin-top:14px"><table class="list"><thead><tr><th>Anbieter</th><th>Kategorie</th><th>Intervall</th><th class="num">Betrag</th><th class="num">pro Monat</th><th></th></tr></thead><tbody>
+        ${S.fixkosten.map(f => `<tr class="${f.aktiv ? '' : 'inaktiv'}"><td>${esc(f.anbieter)}${f.zweck || f.notiz ? `<br><span class="muted">${esc([f.zweck, f.notiz].filter(Boolean).join(' · '))}</span>` : ''}</td><td>${esc(f.kategorie)}</td>
+          <td>${ivTxt(f.intervall)}${f.aktiv ? '' : ' · pausiert'}</td><td class="num">${eur(f.betrag)}</td><td class="num">${f.aktiv ? eur(fixMonat(f)) : '–'}</td>
+          <td><div class="btn-row end"><button class="btn small" data-fx-e="${f.id}">Bearbeiten</button><button class="btn small danger" data-fx-d="${f.id}">Löschen</button></div></td></tr>`).join('')}
+        </tbody><tfoot><tr><td colspan="4"><b>Summe aktiv</b></td><td class="num"><b>${eur(fm)}</b></td><td class="muted">${eur(fm * 12)} pro Jahr</td></tr></tfoot></table></div>` : '<p class="empty">Noch keine Fixkosten hinterlegt.</p>'}`;
+  }
+  function fixDlg(f) {
+    f = f || { kategorie: 'Software', intervall: 'monatlich', betrag: 0, aktiv: true };
+    const kats = [...new Set(['Software', 'Versicherung', 'Bank', 'Miete', 'Telefon', 'Entnahme', ...S.fixkosten.map(x => x.kategorie)])];
+    openDlg(`<form id="fxf" class="dlg"><h2>${f.id ? 'Posten bearbeiten' : 'Neuer Posten'}</h2>
+      <div class="grid2" style="margin-top:16px">
+        <label class="f span2">Anbieter<input name="anbieter" value="${esc(f.anbieter)}" required placeholder="z. B. Adobe"></label>
+        <label class="f span2">Wofür<input name="zweck" value="${esc(f.zweck)}" placeholder="z. B. Creative Cloud, 1 Lizenz"></label>
+        <label class="f">Betrag in €<input name="betrag" inputmode="decimal" value="${numIn(f.betrag)}"></label>
+        <label class="f">Intervall<select name="intervall">${INTERVALLE.map(([v, l]) => `<option value="${v}" ${v === f.intervall ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f">Kategorie<input name="kategorie" list="fxKats" value="${esc(f.kategorie)}"><datalist id="fxKats">${kats.map(k => `<option value="${esc(k)}">`).join('')}</datalist></label>
+        <label class="f">Notiz<input name="notiz" value="${esc(f.notiz)}" placeholder="z. B. fällig 13.07."></label>
+        <label class="check span2"><input type="checkbox" name="aktiv" ${f.aktiv ? 'checked' : ''}> Aktiv (zählt in der Übersicht)</label>
+      </div>
+      <div class="actions"><button type="button" class="btn" data-x>Abbrechen</button><button class="btn primary">Speichern</button></div></form>`);
+    dlg.querySelector('[data-x]').onclick = closeDlg;
+    $('#fxf').onsubmit = async e => {
+      e.preventDefault(); const fd = new FormData(e.target);
+      const o = { anbieter: fd.get('anbieter').trim(), zweck: fd.get('zweck').trim() || null, betrag: r2(num(fd.get('betrag'))), intervall: fd.get('intervall'),
+        kategorie: fd.get('kategorie').trim() || 'Sonstiges', notiz: fd.get('notiz').trim() || null, aktiv: fd.has('aktiv') };
+      if (!o.anbieter) { toast('Bitte einen Anbieter angeben.', true); return; }
+      if (f.id) o.id = f.id;
+      const ok = await guard(() => DB.saveFixkosten(o), 'Fixkosten gespeichert'); if (!ok) return;
+      closeDlg(); S.fixkosten = await DB.listFixkosten(); const p = $('#fixPanel'); if (p) p.innerHTML = fixPanel(); ablageSyncSpaeter();
     };
   }
 

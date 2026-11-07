@@ -44,17 +44,21 @@
     };
   }
 
-  function modellMahnung(r, m) {
+  /* bezahlt: Summe der Zahlungen bis zum Datum der Erinnerung (Teilzahlungen) */
+  function modellMahnung(r, m, bezahlt) {
+    bezahlt = Math.round((Number(bezahlt) || 0) * 100) / 100;
+    const teil = bezahlt > 0 && bezahlt < Number(r.brutto);
     const f = r.firma_snapshot, k = r.kunde_snapshot;
     const titel = (m.stufe > 1 ? m.stufe + '. ' : '') + 'Zahlungserinnerung';
     return {
       art: 'mahnung', titel, entwurf: false, firma: f, kunde: k,
       angaben: [['Rechnungsnummer', r.nummer], ['Rechnungsdatum', dDE(r.datum)], ['Erinnerung vom', dDE(m.datum)], ['Zahlbar bis', dDE(m.frist_bis)]],
       einleitung: anrede(k) + '\n\n' +
-        `sicher ist es Ihrer Aufmerksamkeit entgangen: Für unsere Rechnung Nr. ${r.nummer} vom ${dDE(r.datum)} konnten wir bis heute keinen Zahlungseingang feststellen.\n\n` +
+        `sicher ist es Ihrer Aufmerksamkeit entgangen: Für unsere Rechnung Nr. ${r.nummer} vom ${dDE(r.datum)} ${teil ? `ist bisher nur eine Teilzahlung über ${eur(bezahlt)} bei uns eingegangen.` : 'konnten wir bis heute keinen Zahlungseingang feststellen.'}\n\n` +
         `Bitte überweisen Sie den offenen Betrag bis zum ${dDE(m.frist_bis)} auf das unten genannte Konto. Sollte sich Ihre Zahlung mit diesem Schreiben überschnitten haben, betrachten Sie es bitte als gegenstandslos.`,
       positionen: null,
-      summen: [{ l: 'Offener Betrag', v: eur(r.brutto), bold: true }],
+      summen: teil ? [{ l: 'Rechnungsbetrag', v: eur(r.brutto) }, { l: 'Bereits bezahlt', v: '– ' + eur(bezahlt) }, { l: 'Offener Betrag', v: eur(Number(r.brutto) - bezahlt), bold: true }]
+        : [{ l: 'Offener Betrag', v: eur(r.brutto), bold: true }],
       hinweis: null, schluss: null,
       zahlung: { zweck: 'Rechnung ' + r.nummer }
     };
