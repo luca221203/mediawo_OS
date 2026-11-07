@@ -1,10 +1,8 @@
-/* Automatische Ablage in einem Ordner auf dem Rechner (z. B. ein Google-Drive-Ordner).
-   Funktioniert in Google Chrome und Microsoft Edge (File System Access API).
-   Struktur: <Ordner>/<Jahr>/Rechnungen|Stornorechnungen|Zahlungserinnerungen/*.pdf
-             <Ordner>/Sicherungen/Mediawo-Sicherung-JJJJ-MM-TT.json und Mediawo-Sicherung-aktuell.json */
+/* Zwei Ordner auf dem Rechner, wie bei IntegraSoma (nur Chrome/Edge, File System Access API):
+   PDF-Ablage:     <Ordner>/<Jahr>/Rechnungen|Stornorechnungen|Zahlungserinnerungen/*.pdf
+   Datensicherung: <Ordner>/Mediawo-Sicherung-JJJJ-MM-TT.json und Mediawo-Sicherung-aktuell.json */
 (function () {
   const SUPPORTED = typeof window.showDirectoryPicker === 'function';
-  let handle = null, state = SUPPORTED ? 'off' : 'unsupported', letzteSicherung = null, letzterFehler = '';
 
   function idb() {
     return new Promise((res, rej) => {
@@ -21,18 +19,6 @@
       tx.oncomplete = () => res(rq.result); tx.onerror = () => rej(tx.error);
     });
   }
-  /* Rechte- oder Ordnerfehler schalten die Ablage auf Pause, Fehler bei einer einzelnen Datei nicht */
-  function fehler(e, nurDatei) {
-    letzterFehler = (e && (e.name || e.message)) || 'unbekannt';
-    if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) state = 'needs-permission';
-    else if (!nurDatei) state = 'error';
-  }
-
-  async function ordner(...teile) {
-    let d = handle;
-    for (const t of teile) d = await d.getDirectoryHandle(t, { create: true });
-    return d;
-  }
   async function schreiben(dir, name, inhalt) {
     const fh = await dir.getFileHandle(name, { create: true });
     const w = await fh.createWritable(); await w.write(inhalt); await w.close();
@@ -41,52 +27,71 @@
     return check.size;
   }
 
+  function ordnerSpeicher(key, pickerId) {
+    let handle = null, state = SUPPORTED ? 'off' : 'unsupported', fehlerTxt = '';
+    function fehler(e, nurDatei) {
+      fehlerTxt = (e && (e.name || e.message)) || 'unbekannt';
+      if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) state = 'needs-permission';
+      else if (!nurDatei) state = 'error';
+    }
+    async function unter(...teile) { let d = handle; for (const t of teile) d = await d.getDirectoryHandle(t, { create: true }); return d; }
+    return {
+      get state() { return state; }, get name() { return handle ? handle.name : ''; }, get fehler() { return fehlerTxt; },
+      async init() {
+        if (!SUPPORTED) return;
+        try { handle = await kv('get', key); } catch (e) { handle = null; }
+        if (!handle) { state = 'off'; return; }
+        try { state = (await handle.queryPermission({ mode: 'readwrite' })) === 'granted' ? 'on' : 'needs-permission'; }
+        catch (e) { state = 'needs-permission'; }
+      },
+      async waehlen() {
+        try {
+          const h = await window.showDirectoryPicker({ id: pickerId, mode: 'readwrite', startIn: 'documents' });
+          handle = h; await kv('set', key, h); state = 'on'; return true;
+        } catch (e) { if (e.name !== 'AbortError') fehler(e); return false; }
+      },
+      async freigeben() {
+        if (!handle) return false;
+        try { state = (await handle.requestPermission({ mode: 'readwrite' })) === 'granted' ? 'on' : 'needs-permission'; }
+        catch (e) { state = 'needs-permission'; }
+        return state === 'on';
+      },
+      async aus() { handle = null; state = SUPPORTED ? 'off' : 'unsupported'; try { await kv('del', key); } catch (e) { } },
+      async existiert(teile, name) {
+        if (state !== 'on') return false;
+        try { const d = await unter(...teile); await d.getFileHandle(name); return true; }
+        catch (e) { if (e.name === 'NotFoundError' || e.name === 'TypeMismatchError') return false; fehler(e, true); return false; }
+      },
+      async datei(teile, name, inhalt) {
+        if (state !== 'on') return null;
+        try { const d = await unter(...teile); const size = await schreiben(d, name, inhalt); return { path: [handle.name, ...teile].join('/'), name, size }; }
+        catch (e) { console.warn('Ablage', name, e); fehler(e, true); return null; }
+      }
+    };
+  }
+
+  const pdf = ordnerSpeicher('pdfDir', 'mediawo-pdf');
+  const backup = ordnerSpeicher('backupDir', 'mediawo-sicherung');
+  let letzteSicherung = null;
+
   window.ABLAGE = {
-    get state() { return state; },
-    get name() { return handle ? handle.name : ''; },
+    supported: SUPPORTED, pdf, backup,
     get letzteSicherung() { return letzteSicherung; },
-    get fehler() { return letzterFehler; },
     async init() {
-      if (!SUPPORTED) return;
-      try { handle = await kv('get', 'ablageDir'); letzteSicherung = await kv('get', 'letzteSicherung') || null; } catch (e) { handle = null; }
-      if (!handle) { state = 'off'; return; }
-      try { state = (await handle.queryPermission({ mode: 'readwrite' })) === 'granted' ? 'on' : 'needs-permission'; }
-      catch (e) { state = 'needs-permission'; }
+      await Promise.all([pdf.init(), backup.init()]);
+      try { letzteSicherung = await kv('get', 'letzteSicherung') || null; } catch (e) { }
     },
-    async waehlen() {
-      try {
-        const h = await window.showDirectoryPicker({ id: 'mediawo-ablage', mode: 'readwrite', startIn: 'documents' });
-        handle = h; await kv('set', 'ablageDir', h); state = 'on'; return true;
-      } catch (e) { if (e.name !== 'AbortError') fehler(e); return false; }
-    },
-    async freigeben() {
-      if (!handle) return false;
-      try { state = (await handle.requestPermission({ mode: 'readwrite' })) === 'granted' ? 'on' : 'needs-permission'; }
-      catch (e) { state = 'needs-permission'; }
-      return state === 'on';
-    },
-    async aus() { handle = null; state = SUPPORTED ? 'off' : 'unsupported'; try { await kv('del', 'ablageDir'); } catch (e) { } },
-    async existiert(info) {
-      if (state !== 'on') return false;
-      try { const d = await ordner(info.jahr, info.ordner); await d.getFileHandle(info.name); return true; }
-      catch (e) { if (e.name === 'NotFoundError' || e.name === 'TypeMismatchError') return false; fehler(e, true); return false; }
-    },
-    async pdf(info, blob) {
-      if (state !== 'on') return null;
-      try { const d = await ordner(info.jahr, info.ordner); const size = await schreiben(d, info.name, blob); return { path: `${handle.name}/${info.jahr}/${info.ordner}`, name: info.name, size }; }
-      catch (e) { console.warn('Ablage', info.name, e); fehler(e, true); return null; }
-    },
+    existiertPdf(info) { return pdf.existiert([info.jahr, info.ordner], info.name); },
+    speicherePdf(info, blob) { return pdf.datei([info.jahr, info.ordner], info.name, blob); },
     async sicherung(daten) {
-      if (state !== 'on') return false;
-      try {
-        const d = await ordner('Sicherungen');
-        const now = new Date(), tag = now.toISOString().slice(0, 10);
-        const json = JSON.stringify({ app: 'Mediawo OS', erstellt: now.toISOString(), ...daten }, null, 2);
-        await schreiben(d, `Mediawo-Sicherung-${tag}.json`, json);
-        await schreiben(d, 'Mediawo-Sicherung-aktuell.json', json);
-        letzteSicherung = now.toISOString(); try { await kv('set', 'letzteSicherung', letzteSicherung); } catch (e) { }
-        return true;
-      } catch (e) { fehler(e); return false; }
+      if (backup.state !== 'on') return false;
+      const now = new Date();
+      const json = JSON.stringify({ app: 'Mediawo OS', erstellt: now.toISOString(), ...daten }, null, 2);
+      const a = await backup.datei([], `Mediawo-Sicherung-${now.toISOString().slice(0, 10)}.json`, json);
+      const b = a && await backup.datei([], 'Mediawo-Sicherung-aktuell.json', json);
+      if (!b) return false;
+      letzteSicherung = now.toISOString(); try { await kv('set', 'letzteSicherung', letzteSicherung); } catch (e) { }
+      return true;
     }
   };
 })();

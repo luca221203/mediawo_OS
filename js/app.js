@@ -62,56 +62,94 @@
     ablageSyncSpaeter();
   }
 
-  /* ---------- Ablage & Sicherung ---------- */
+  /* ---------- PDF-Ablage & Datensicherung ---------- */
   let syncLaeuft = false, syncNochmal = false, syncTimer = null, fehlend = 0;
   function ablageSyncSpaeter() { clearTimeout(syncTimer); syncTimer = setTimeout(ablageSync, 800); }
+  function sicherungsDaten() { return { firma: S.firma, kunden: S.kunden, leistungen: S.leistungen, rechnungen: S.rechnungen, mahnungen: S.mahnungen }; }
   async function ablageSync() {
-    if (AB.state !== 'on' || !S.firma) { renderSide(); return; }
+    if (!S.firma) return;
     if (syncLaeuft) { syncNochmal = true; return; }
-    syncLaeuft = true;
+    syncLaeuft = true; renderSide();
     try {
-      await AB.sicherung({ firma: S.firma, kunden: S.kunden, leistungen: S.leistungen, rechnungen: S.rechnungen, mahnungen: S.mahnungen });
-      const jobs = [];
-      S.rechnungen.forEach(r => jobs.push({ info: MWPDF.datei(artVon(r), r), md: () => MWDOC.modellRechnung(r) }));
-      S.mahnungen.forEach(m => { const r = S.rechnungen.find(x => x.id === m.rechnung_id); if (r) jobs.push({ info: MWPDF.datei('mahnung', r, m), md: () => MWDOC.modellMahnung(r, m) }); });
-      fehlend = 0;
-      for (const j of jobs) {
-        if (AB.state !== 'on') break;
-        if (!(await AB.existiert(j.info))) { const ok = await AB.pdf(j.info, await MWPDF.blob(j.md())); if (!ok) fehlend++; }
+      if (AB.backup.state === 'on') await AB.sicherung(sicherungsDaten());
+      if (AB.pdf.state === 'on') {
+        const jobs = [];
+        S.rechnungen.forEach(r => jobs.push({ info: MWPDF.datei(artVon(r), r), md: () => MWDOC.modellRechnung(r) }));
+        S.mahnungen.forEach(m => { const r = S.rechnungen.find(x => x.id === m.rechnung_id); if (r) jobs.push({ info: MWPDF.datei('mahnung', r, m), md: () => MWDOC.modellMahnung(r, m) }); });
+        fehlend = 0;
+        for (const j of jobs) {
+          if (AB.pdf.state !== 'on') break;
+          if (!(await AB.existiertPdf(j.info)) && !(await AB.speicherePdf(j.info, await MWPDF.blob(j.md())))) fehlend++;
+        }
       }
     } catch (e) { console.warn('Ablage', e); }
     syncLaeuft = false; renderSide();
+    if (S.view === 'einstellungen') { const a = $('#ablagePanels'); if (a) a.innerHTML = ablagePanels(); }
     if (syncNochmal) { syncNochmal = false; ablageSync(); }
   }
   function renderSide() {
     const box = $('#ablageBox'); if (!box) return;
-    const st = AB.state;
-    let html = '', cls = '';
-    if (st === 'unsupported') { cls = 'warn'; html = `<strong>Automatische Ablage aus</strong><br>Funktioniert nur in Google Chrome oder Microsoft Edge.`; }
-    else if (st === 'off') { cls = 'warn'; html = `<strong>Keine Ablage eingerichtet</strong><br><button class="btn small" data-ab="waehlen">Ordner wählen</button>`; }
-    else if (st === 'needs-permission') { cls = 'warn'; html = `<strong>Ablage pausiert</strong><br>Der Browser braucht eine Bestätigung.<br><button class="btn small primary" data-ab="freigeben">Ablage freigeben</button>`; }
-    else if (st === 'error') { cls = 'warn'; html = `<strong>Ordner nicht erreichbar</strong><br><button class="btn small" data-ab="waehlen">Ordner neu wählen</button>`; }
-    else html = `<strong>Ablage aktiv</strong> · ${esc(AB.name)}<br>${syncLaeuft ? 'wird gesichert …' : AB.letzteSicherung ? 'gesichert ' + whenTxt(AB.letzteSicherung) : ''}${fehlend ? `<br><b>${fehlend} Belege nicht gespeichert</b>` : ''}`;
-    box.className = 'ablage ' + cls; box.innerHTML = html;
+    const P = AB.pdf, B = AB.backup, zeilen = [];
+    let warn = false;
+    const z = (label, st, ok, act) => {
+      if (st === 'on') return `<div><span class="dot ok"></span>${label}: <b>${ok}</b></div>`;
+      warn = true;
+      if (st === 'needs-permission') return `<div><span class="dot warn"></span>${label} pausiert</div>`;
+      if (st === 'error') return `<div><span class="dot warn"></span>${label}: Ordner fehlt</div>`;
+      if (st === 'unsupported') return `<div><span class="dot"></span>${label}: nur in Chrome</div>`;
+      return `<div><span class="dot warn"></span>${label}: aus</div>`;
+    };
+    zeilen.push(z('PDF-Ablage', P.state, esc(P.name)));
+    zeilen.push(z('Sicherung', B.state, syncLaeuft ? 'läuft …' : AB.letzteSicherung ? whenTxt(AB.letzteSicherung) : esc(B.name)));
+    if (fehlend) zeilen.push(`<div class="err">${fehlend} Belege nicht abgelegt</div>`);
+    const pause = P.state === 'needs-permission' || B.state === 'needs-permission';
+    box.className = 'ablage' + (warn ? ' warn' : '');
+    box.innerHTML = zeilen.join('') + (pause ? `<button class="btn small primary" data-ab="freigeben">Ordner freigeben</button>`
+      : warn && AB.supported ? `<button class="btn small" data-go-settings>Einrichten</button>` : '');
   }
   async function ablageAktion(a) {
-    if (a === 'waehlen') { if (await AB.waehlen()) toast('Ablage eingerichtet: ' + AB.name); }
-    if (a === 'freigeben') { if (await AB.freigeben()) toast('Ablage wieder freigegeben'); }
-    if (a === 'aus') { await AB.aus(); toast('Automatische Ablage ausgeschaltet'); }
-    if (a === 'jetzt') toast('Sicherung läuft …');
-    renderSide(); if (S.view === 'einstellungen') viewFirma();
+    const [was, ziel] = a.split(':');
+    const st = ziel === 'pdf' ? AB.pdf : ziel === 'backup' ? AB.backup : null;
+    if (was === 'waehlen' && await st.waehlen()) toast((ziel === 'pdf' ? 'PDF-Ordner' : 'Sicherungsordner') + ' gewählt: ' + st.name);
+    if (was === 'aus') { await st.aus(); toast(ziel === 'pdf' ? 'PDF-Ablage ausgeschaltet' : 'Automatische Sicherung ausgeschaltet'); }
+    if (was === 'freigeben') { let ok = false; for (const x of [AB.pdf, AB.backup]) if (x.state === 'needs-permission') ok = (await x.freigeben()) || ok; if (ok) toast('Ordner wieder freigegeben'); }
+    if (was === 'download') {
+      const json = JSON.stringify({ app: 'Mediawo OS', erstellt: new Date().toISOString(), ...sicherungsDaten() }, null, 2);
+      download('Mediawo-Sicherung-' + today() + '.json', new Blob([json], { type: 'application/json' })); return;
+    }
+    if (was === 'jetzt') toast('Wird gesichert …');
+    renderSide(); const a2 = $('#ablagePanels'); if (a2) a2.innerHTML = ablagePanels();
     ablageSync();
   }
-  document.addEventListener('click', e => { const b = e.target.closest('[data-ab]'); if (b) ablageAktion(b.dataset.ab); });
-  function ablagePanel() {
-    const st = AB.state, n = esc(AB.name);
-    const intro = `<p class="hint">Alle Rechnungen, Stornorechnungen und Zahlungserinnerungen werden automatisch als PDF in einem Ordner abgelegt, sortiert nach Jahr und Belegart. Dazu kommt bei jeder Änderung eine vollständige Datensicherung. Am besten einen Ordner in Google Drive wählen (z. B. „MW_Buchhaltung/Mediawo OS“), dann ist alles automatisch in der Cloud. Die Einstellung gilt pro Rechner und Browser.</p>`;
-    if (st === 'unsupported') return intro + `<p class="note">Dieser Browser unterstützt die automatische Ablage nicht. Bitte Mediawo OS in <b>Google Chrome</b> oder <b>Microsoft Edge</b> öffnen.</p>`;
-    if (st === 'on') return intro + `<p>Aktiv im Ordner <b>${n}</b>${AB.letzteSicherung ? ', zuletzt gesichert ' + whenTxt(AB.letzteSicherung) : ''}.<br><span class="hint">Beispiel: ${n}/${today().slice(0, 4)}/Rechnungen/Rechnung_${today().slice(0, 4)}-009_Kunde.pdf</span></p>
-      <div class="btn-row"><button class="btn primary" data-ab="jetzt">Jetzt sichern</button><button class="btn" data-ab="waehlen">Anderen Ordner wählen</button><button class="btn danger" data-ab="aus">Ausschalten</button></div>`;
-    if (st === 'needs-permission') return intro + `<p class="note">Die Ablage in <b>${n}</b> ist pausiert. Der Browser fragt aus Sicherheitsgründen gelegentlich erneut nach.</p><div class="btn-row"><button class="btn primary" data-ab="freigeben">Ablage freigeben</button><button class="btn" data-ab="waehlen">Anderen Ordner wählen</button></div>`;
-    if (st === 'error') return intro + `<p class="note">Der Ordner <b>${n}</b> ist nicht erreichbar (${esc(AB.fehler)}).</p><div class="btn-row"><button class="btn primary" data-ab="waehlen">Ordner neu wählen</button></div>`;
-    return intro + `<div class="btn-row"><button class="btn primary" data-ab="waehlen">Ordner wählen und automatisch ablegen</button></div>`;
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-ab]'); if (b) ablageAktion(b.dataset.ab);
+    if (e.target.closest('[data-go-settings]')) go('einstellungen');
+  });
+  function ordnerPanel(st, ziel, beispiel, leerText, aktivText) {
+    const n = esc(st.name);
+    if (st.state === 'unsupported') return `<p class="note">Funktioniert nur in <b>Google Chrome</b> oder <b>Microsoft Edge</b>. Bitte Mediawo OS dort öffnen.</p>`;
+    if (st.state === 'on') return `<p>${aktivText.replace('{n}', `<b>${n}</b>`)}<br><span class="hint">${beispiel.replace('{n}', n)}</span></p>
+      <div class="btn-row"><button class="btn" data-ab="waehlen:${ziel}">Anderen Ordner wählen</button><button class="btn danger" data-ab="aus:${ziel}">Ausschalten</button></div>`;
+    if (st.state === 'needs-permission') return `<p class="note">Der Ordner <b>${n}</b> braucht eine kurze Bestätigung. Der Browser fragt aus Sicherheitsgründen gelegentlich erneut nach.</p>
+      <div class="btn-row"><button class="btn primary" data-ab="freigeben">Ordner freigeben</button><button class="btn" data-ab="waehlen:${ziel}">Anderen Ordner wählen</button></div>`;
+    if (st.state === 'error') return `<p class="note">Der Ordner <b>${n}</b> ist nicht erreichbar (${esc(st.fehler)}). Vielleicht wurde er verschoben oder gelöscht.</p><button class="btn primary" data-ab="waehlen:${ziel}">Ordner neu wählen</button>`;
+    return `<p class="hint">${leerText}</p><button class="btn primary" data-ab="waehlen:${ziel}">Ordner wählen</button>`;
+  }
+  function ablagePanels() {
+    const j = today().slice(0, 4);
+    return `<div class="panel"><h2>PDF-Ablage</h2>
+        ${ordnerPanel(AB.pdf, 'pdf', `Beispiel: {n}/${j}/Rechnungen/Rechnung_${j}-009_Kunde.pdf`,
+          'Wählen Sie einmal einen Ordner, am besten in Google Drive (z. B. „MW_Buchhaltung/Belege“). Danach legt die App jede Rechnung, Stornorechnung und Zahlungserinnerung dort automatisch als PDF ab, sortiert nach Jahr und Belegart. Fehlende Belege werden beim Öffnen nachgeholt, auch die vom anderen Nutzer.',
+          'PDFs werden automatisch im Ordner {n} abgelegt, sortiert nach Jahr und Belegart.')}
+        ${fehlend ? `<p class="note" style="margin-top:12px">${fehlend} Belege konnten nicht abgelegt werden.</p>` : ''}</div>
+      <div class="panel"><h2>Datensicherung</h2>
+        <p class="hint">Die Daten liegen in der Datenbank (Supabase). Zusätzlich schreibt die App nach jeder Änderung eine vollständige Sicherung in einen Ordner Ihrer Wahl. Pro Tag entsteht eine Datei, dazu immer eine aktuelle.</p>
+        ${ordnerPanel(AB.backup, 'backup', 'Beispiel: {n}/Mediawo-Sicherung-' + today() + '.json',
+          'Am besten einen eigenen Ordner in Google Drive wählen (z. B. „MW_Buchhaltung/Sicherungen“).',
+          'Automatisch aktiv im Ordner {n}' + (AB.letzteSicherung ? ', zuletzt ' + whenTxt(AB.letzteSicherung) : '') + '.')}
+        <h3>Von Hand</h3>
+        <div class="btn-row"><button class="btn" data-ab="download">Sicherung herunterladen</button><button class="btn" id="csvAll">Rechnungsliste als CSV</button>${AB.backup.state === 'on' || AB.pdf.state === 'on' ? '<button class="btn" data-ab="jetzt">Jetzt abgleichen</button>' : ''}</div>
+      </div>`;
   }
 
   /* ---------- Login & Passwort ---------- */
@@ -242,16 +280,16 @@
     dlg.querySelector('[data-x=dl]').onclick = () => guard(async () => download(info.name, await MWPDF.blob(md)));
     const box = (kind, head, sub) => { $('#saveWhere').innerHTML = `<div class="savebox ${kind}"><span class="ic">${{ ok: '✓', err: '!', info: 'i' }[kind]}</span><div><strong>${esc(head)}</strong>${sub ? `<span class="path">${esc(sub)}</span>` : ''}</div></div>`; };
     if (gespeichert && gespeichert.path) box('ok', 'Automatisch abgelegt', gespeichert.path + '/' + gespeichert.name);
-    else if (gespeichert === null) box('err', 'Automatische Ablage hat nicht geklappt', AB.state === 'needs-permission' ? 'Bitte links „Ablage freigeben“ klicken. Die Datei wird dann nachgeholt.' : 'Bitte PDF herunterladen und von Hand ablegen.');
-    else if (AB.state === 'on') box('ok', 'Liegt in der Ablage', `${AB.name}/${info.jahr}/${info.ordner}/${info.name}`);
-    else box('info', 'Keine automatische Ablage eingerichtet', 'Unter Firmendaten einen Ordner wählen, dann wird jeder Beleg automatisch gespeichert.');
+    else if (gespeichert === null) box('err', 'Automatische Ablage hat nicht geklappt', AB.pdf.state === 'needs-permission' ? 'Bitte links „Ordner freigeben“ klicken. Die Datei wird dann nachgeholt.' : 'Bitte PDF herunterladen und von Hand ablegen.');
+    else if (AB.pdf.state === 'on') box('ok', 'Liegt in der PDF-Ablage', `${AB.pdf.name}/${info.jahr}/${info.ordner}/${info.name}`);
+    else box('info', 'Keine PDF-Ablage eingerichtet', 'Unter Einstellungen einen Ordner wählen, dann wird jeder Beleg automatisch gespeichert.');
   }
   async function belegErstellt(md, titel, info) {
     let res;
-    if (AB.state === 'on') res = await AB.pdf(info, await MWPDF.blob(md));
-    else if (AB.state === 'needs-permission') res = null;
+    if (AB.pdf.state === 'on') res = await AB.speicherePdf(info, await MWPDF.blob(md));
+    else if (AB.pdf.state === 'needs-permission') res = null;
     zeigeBeleg(md, titel, info, res);
-    renderSide();
+    ablageSyncSpaeter();
   }
   function mahnungenDlg(r) {
     const ms = mahnungenZu(r);
@@ -384,10 +422,8 @@
           </div>
           <div class="panel"><h2>Positionen</h2>
             <div class="pos-list" id="posList"></div>
-            <div class="btn-row" style="margin-top:12px">
-              <button type="button" class="btn" id="posAdd">+ Freie Position</button>
-              <select id="posKatalog" class="grow"><option value="">+ Aus Leistungskatalog …</option>${S.leistungen.filter(l => l.aktiv).map(l => `<option value="${l.id}">${esc(l.name)} · ${eur(l.preis)}</option>`).join('')}</select>
-            </div>
+            ${S.leistungen.some(l => l.aktiv) ? '' : '<p class="note" style="margin-top:12px">Noch keine Leistungen angelegt. Bitte zuerst unter „Leistungen“ den Katalog füllen.</p>'}
+            <div class="btn-row" style="margin-top:12px"><button type="button" class="btn" id="posAdd">+ Position hinzufügen</button></div>
             <div class="totals" id="dTotals"></div>
           </div>
           <div class="panel"><h2>Texte</h2>
@@ -410,13 +446,6 @@
     $('#dZeitraum').onchange = e => { sync(); d.zeitraum = e.target.checked; if (!d.zeitraum) d.leistungszeitraum_bis = ''; viewNeu(); };
     $('#dNeuKunde').onclick = () => kundeDlg(null, k => { sync(); d.kunde_id = k.id; viewNeu(); });
     $('#posAdd').onclick = () => { d.positionen.push({ bezeichnung: '', beschreibung: '', menge: 1, einheit: 'Stück', einzelpreis: 0 }); renderPos(); };
-    $('#posKatalog').onchange = e => {
-      const l = S.leistungen.find(x => x.id === e.target.value); e.target.value = ''; if (!l) return;
-      const leer = d.positionen.length === 1 && !d.positionen[0].bezeichnung && !num(d.positionen[0].einzelpreis);
-      const p = { bezeichnung: l.name, beschreibung: l.beschreibung || '', menge: 1, einheit: l.einheit || 'Stück', einzelpreis: Number(l.preis) };
-      if (leer) d.positionen[0] = p; else d.positionen.push(p);
-      renderPos();
-    };
     $('#dReset').onclick = async () => { if (await confirmDlg('Entwurf verwerfen?', 'Alle Eingaben dieser Rechnung gehen verloren.', 'Verwerfen', true)) { S.draft = null; viewNeu(); } };
     $('#dPdf').onclick = async () => { const r = entwurfAlsRechnung(true); if (!r) return; await guard(async () => { const doc = await MWPDF.zeichnen(MWDOC.modellRechnung(r)); window.open(doc.output('bloburl'), '_blank'); }); };
     $('#dCreate').onclick = async () => {
@@ -446,7 +475,9 @@
   function renderPos() {
     const d = S.draft;
     $('#posList').innerHTML = d.positionen.map((p, i) => `<div class="pos" data-i="${i}">
-      <label class="f full">Bezeichnung<input data-k="bezeichnung" value="${esc(p.bezeichnung)}" placeholder="z. B. Imagefilm"></label>
+      <label class="f full">Leistung<select data-k="leistung"><option value="">Leistung wählen …</option>
+        ${S.leistungen.filter(l => l.aktiv || l.name === p.bezeichnung).map(l => `<option value="${l.id}" ${l.name === p.bezeichnung ? 'selected' : ''}>${esc(l.name)} · ${eur(l.preis)}${l.einheit && l.einheit !== 'Stück' ? ' / ' + esc(l.einheit) : ''}</option>`).join('')}
+        ${p.bezeichnung && !S.leistungen.some(l => l.name === p.bezeichnung) ? `<option selected>${esc(p.bezeichnung)}</option>` : ''}</select></label>
       <label class="f full">Beschreibung (optional)<input data-k="beschreibung" value="${esc(p.beschreibung)}" placeholder="erscheint klein darunter"></label>
       <label class="f">Menge<input data-k="menge" inputmode="decimal" value="${esc(String(p.menge).replace('.', ','))}"></label>
       <label class="f">Einzelpreis in €<input data-k="einzelpreis" inputmode="decimal" value="${numIn(p.einzelpreis)}"></label>
@@ -454,10 +485,18 @@
       <button type="button" class="x" data-del title="Position entfernen" aria-label="Position entfernen" ${d.positionen.length < 2 ? 'disabled' : ''}>✕</button></div>`).join('');
     $('#posList').oninput = e => {
       const box = e.target.closest('.pos'), k = e.target.dataset.k; if (!box || !k) return;
-      const p = d.positionen[+box.dataset.i]; p[k] = e.target.value;
+      const p = d.positionen[+box.dataset.i];
+      if (k === 'leistung') {
+        const l = S.leistungen.find(x => x.id === e.target.value);
+        if (l) { p.bezeichnung = l.name; p.einheit = l.einheit || 'Stück'; p.einzelpreis = Number(l.preis); if (!p.beschreibung && l.beschreibung) p.beschreibung = l.beschreibung; }
+        else { p.bezeichnung = ''; }
+        return renderPos();
+      }
+      p[k] = e.target.value;
       box.querySelector('[data-sum]').textContent = eur(num(p.menge) * num(p.einzelpreis));
       totals(); vorschau();
     };
+    $('#posList').onchange = $('#posList').oninput;
     $('#posList').onclick = e => { if (e.target.closest('[data-del]')) { d.positionen.splice(+e.target.closest('.pos').dataset.i, 1); renderPos(); } };
     totals(); vorschau();
   }
@@ -477,7 +516,7 @@
       if (!d.datum || !d.leistungsdatum) { toast('Bitte Rechnungs- und Leistungsdatum angeben.', true); return null; }
       if (d.zeitraum && (!d.leistungszeitraum_bis || d.leistungszeitraum_bis < d.leistungsdatum)) { toast('Bitte ein gültiges Ende des Leistungszeitraums angeben.', true); return null; }
       if (!pos.length) { toast('Bitte mindestens eine Position eintragen.', true); return null; }
-      if (pos.some(p => !p.bezeichnung.trim())) { toast('Jede Position braucht eine Bezeichnung.', true); return null; }
+      if (pos.some(p => !p.bezeichnung.trim())) { toast('Bitte bei jeder Position eine Leistung wählen.', true); return null; }
       if (pos.some(p => num(p.menge) <= 0)) { toast('Mengen müssen größer als 0 sein.', true); return null; }
     }
     const rp = pos.map((p, i) => ({ pos: i + 1, bezeichnung: p.bezeichnung.trim(), beschreibung: (p.beschreibung || '').trim(), menge: num(p.menge), einheit: p.einheit || 'Stück', einzelpreis: r2(num(p.einzelpreis)), gesamt: r2(num(p.menge) * num(p.einzelpreis)) }));
@@ -581,9 +620,10 @@
     const f = S.firma;
     const i = (n, l, cls = '', t = 'text') => `<label class="f ${cls}">${l}<input name="${n}" type="${t}" value="${esc(f[n])}"></label>`;
     $('#main').innerHTML = `
-      <div class="head"><div><h1>Firmendaten</h1><p class="sub">Erscheinen auf neuen Rechnungen. Bestehende Rechnungen bleiben unverändert.</p></div></div>
+      <div class="head"><div><h1>Einstellungen</h1><p class="sub">Firmendaten erscheinen auf neuen Rechnungen. Bestehende Rechnungen bleiben unverändert.</p></div></div>
       <div class="stack">
-        <div class="panel"><h2>Ablage & Sicherung</h2>${ablagePanel()}</div>
+        <div class="stack" id="ablagePanels">${ablagePanels()}</div>
+        <div class="panel"><h2>Darstellung</h2><div class="btn-row">${themeButtons()}</div></div>
         <form id="ff" class="stack">
           <div class="panel"><h2>Firma</h2><div class="grid2">
             ${i('name', 'Firmenname')}${i('marke', 'Marke')}${i('inhaber', 'Inhaber (Grußzeile)', 'span2')}
@@ -597,9 +637,10 @@
           <div class="panel"><h2>Bank & Fristen</h2><div class="grid2">
             ${i('bank', 'Bank')}${i('kontoinhaber', 'Kontoinhaber')}${i('iban', 'IBAN')}${i('bic', 'BIC')}
             ${i('zahlungsziel_tage', 'Zahlungsziel in Tagen', '', 'number')}${i('mahnfrist_tage', 'Frist bei Zahlungserinnerung in Tagen', '', 'number')}</div></div>
-          <div class="btn-row end"><button class="btn primary">Speichern</button></div>
+          <div class="btn-row end"><button class="btn primary">Firmendaten speichern</button></div>
         </form>
       </div>`;
+    $('#csvAll').onclick = () => csvExport(S.rechnungen);
     $('#ff').onsubmit = async e => {
       e.preventDefault(); const fd = new FormData(e.target), o = {};
       for (const [k, v] of fd.entries()) o[k] = String(v).trim();
@@ -609,6 +650,14 @@
       await guard(async () => { await DB.saveFirma(o); S.firma = await DB.getFirma(); ablageSyncSpaeter(); }, 'Firmendaten gespeichert');
     };
   }
+
+  /* ---------- Darstellung (dunkel / hell) ---------- */
+  function themeGet() { try { return localStorage.getItem('mw-theme') || 'dark'; } catch (e) { return 'dark'; } }
+  function themeSet(t) { document.documentElement.dataset.theme = t; try { localStorage.setItem('mw-theme', t); } catch (e) { } $$('[data-theme-set]').forEach(b => b.setAttribute('aria-pressed', b.dataset.themeSet === t)); }
+  function themeButtons() { const t = themeGet(); return `<div class="seg"><button data-theme-set="dark" aria-pressed="${t === 'dark'}">Dunkel</button><button data-theme-set="light" aria-pressed="${t === 'light'}">Hell</button></div>`; }
+  document.addEventListener('click', e => { const b = e.target.closest('[data-theme-set]'); if (b) themeSet(b.dataset.themeSet); });
+  $('#themeToggle').onclick = () => themeSet(themeGet() === 'dark' ? 'light' : 'dark');
+  themeSet(themeGet());
 
   /* ---------- Start ---------- */
   DB.onAuth(s => zeigeApp(s));

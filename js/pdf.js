@@ -108,18 +108,22 @@
     });
     y += 6;
     if (md.hinweis) absatz(md.hinweis, 9, GREY);
-    y += 12;
-    absatz(md.schluss);
-    if (md.zahlung) {
-      y += 8; neueSeite(70);
+
+    /* Unteres Drittel: Schlusstext, Zahlungsinformationen und Gruß gleichmäßig bis zur Fußzeile verteilen */
+    font('l', 10);
+    const schlussZeilen = md.schluss ? md.schluss.split('\n').reduce((n, p) => n + (p.trim() ? doc.splitTextToSize(p, W).length : 0.55), 0) : 0;
+    const bloecke = [];
+    if (md.schluss) bloecke.push({ h: schlussZeilen * 15, zeichne: () => absatz(md.schluss) });
+    if (md.zahlung) bloecke.push({ h: 15 + 4 * 14, zeichne: () => {
       font('m', 9.5); doc.text('Zahlungsinformationen', X, y); y += 15;
       font('l', 9.5);
       [['Empfänger', f.kontoinhaber], ['IBAN', f.iban], ['BIC', f.bic], ['Verwendungszweck', md.zahlung.zweck]]
         .forEach(([l, v]) => { doc.setTextColor(GREY); doc.text(l, X, y); doc.setTextColor(INK); doc.text(String(v), X + 105, y); y += 14; });
-      y += 4;
-    }
-    y += 14; neueSeite(45);
-    absatz('Mit freundlichen Grüßen'); y += 4; absatz(f.inhaber);
+    } });
+    bloecke.push({ h: 15 + 4 + 15, zeichne: () => { absatz('Mit freundlichen Grüßen'); y += 4; absatz(f.inhaber); } });
+    const frei = LIMIT - 10 - y - bloecke.reduce((a, b) => a + b.h, 0);
+    const luecke = Math.max(18, Math.min(48, frei / bloecke.length));
+    bloecke.forEach(b => { y += luecke; neueSeite(b.h); b.zeichne(); });
 
     const n = doc.getNumberOfPages();
     for (let i = 1; i <= n; i++) {

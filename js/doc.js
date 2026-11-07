@@ -85,9 +85,9 @@
         ${tab}
         ${sum}
         ${md.hinweis ? `<p class="d-hint">${esc(md.hinweis)}</p>` : ''}
-        ${md.schluss ? `<div class="d-schluss">${par(md.schluss)}</div>` : ''}
-        ${zahlung}
-        <div class="d-gruss"><p>Mit freundlichen Grüßen</p><p>${esc(f.inhaber)}</p></div>
+        ${md.schluss ? `<div class="d-sp"></div><div class="d-schluss">${par(md.schluss)}</div>` : ''}
+        ${zahlung ? '<div class="d-sp"></div>' + zahlung : ''}
+        <div class="d-sp"></div><div class="d-gruss"><p>Mit freundlichen Grüßen</p><p>${esc(f.inhaber)}</p></div>
       </div>
       ${md.entwurf ? '<div class="d-wm">ENTWURF</div>' : ''}
       <div class="d-foot">
