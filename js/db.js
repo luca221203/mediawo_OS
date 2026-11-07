@@ -60,6 +60,8 @@
         });
         fail(error); return data;
       },
+      async listMahnungen() { const { data, error } = await sb.from('mahnungen').select('*').order('datum').order('stufe'); fail(error); return data; },
+      async createMahnung(m) { const { data, error } = await sb.from('mahnungen').insert(m).select().single(); fail(error); return data; },
       async stornieren(id) { const { data, error } = await sb.rpc('rechnung_stornieren', { p_rechnung_id: id }); fail(error); return data; },
       async setBezahlt(id, datum) {
         const { error } = await sb.from('rechnungen').update({ status: datum ? 'bezahlt' : 'offen', bezahlt_am: datum || null }).eq('id', id);
@@ -90,7 +92,7 @@
       { id: uid(), name: 'Carousel-Slider', beschreibung: '', preis: 200, einheit: 'Stück', aktiv: true },
       { id: uid(), name: 'Imagefilm', beschreibung: 'Planung, Dreh und Schnitt', preis: 600, einheit: 'Stück', aktiv: true }
     ];
-    const rechnungen = [];
+    const rechnungen = [], mahnungen = [];
     let counter = 8;
     let session = null; const cbs = [];
 
@@ -137,6 +139,8 @@
       },
       async deleteLeistung(id) { leistungen.splice(leistungen.findIndex(x => x.id === id), 1); return wait(null); },
       async listRechnungen() { return wait(rechnungen); },
+      async listMahnungen() { return wait(mahnungen); },
+      async createMahnung(m) { const n = { ...m, id: uid(), created_at: new Date().toISOString() }; mahnungen.push(n); return wait(n); },
       async createRechnung(p) {
         const k = kunden.find(x => x.id === p.kunde_id); if (!k) throw new Error('Kunde nicht gefunden.');
         const r = make(k, p.datum, p.positionen.map(x => ({ ...x, menge: +x.menge, einzelpreis: +x.einzelpreis })),

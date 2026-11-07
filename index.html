@@ -6,7 +6,7 @@
 <meta name="robots" content="noindex,nofollow">
 <title>Mediawo OS</title>
 <link rel="icon" type="image/png" href="img/icon.png">
-<link rel="stylesheet" href="css/app.css?v=3">
+<link rel="stylesheet" href="css/app.css?v=4">
 </head>
 <body>
 
@@ -26,30 +26,35 @@
 
 <div class="app" id="app" hidden>
   <aside class="side">
-    <img src="img/logo.png" alt="Mediawo">
+    <div class="brand"><img src="img/logo.png" alt="Mediawo"></div>
     <div class="demo-badge" id="demoBadge" hidden>Demo-Modus: Beispieldaten, nichts wird gespeichert.</div>
-    <nav id="nav">
+    <nav class="nav" id="nav">
       <button data-view="start">Übersicht</button>
-      <button data-view="rechnungen">Rechnungen</button>
-      <button data-view="neu">Neue Rechnung</button>
+      <button data-view="rechnungen">Rechnungen <span class="count" id="navOverdue" hidden></span></button>
       <button data-view="kunden">Kunden</button>
       <button data-view="leistungen">Leistungen</button>
       <button data-view="einstellungen">Firmendaten</button>
+      <button data-view="neu" class="new">Neue Rechnung</button>
     </nav>
-    <div class="user"><span id="userMail"></span><br><button class="btn small" id="pwChange">Passwort ändern</button> <button class="btn small" id="logout">Abmelden</button></div>
+    <div class="ablage" id="ablageBox"></div>
+    <div class="user"><span id="userMail"></span>
+      <div class="btn-row"><button class="btn small" id="pwChange">Passwort ändern</button><button class="btn small" id="logout">Abmelden</button></div></div>
   </aside>
   <main id="main" tabindex="-1"></main>
 </div>
 
+<div class="menu" id="menu" role="menu" hidden></div>
 <dialog id="dlg"></dialog>
 <div id="toast" role="status"></div>
 
-<script src="vendor/supabase.js?v=3"></script>
-<script src="vendor/jspdf.umd.min.js?v=3"></script>
-<script src="vendor/pdf-fonts.js?v=3"></script>
-<script src="js/config.js?v=3"></script>
-<script src="js/db.js?v=3"></script>
-<script src="js/pdf.js?v=3"></script>
-<script src="js/app.js?v=3"></script>
+<script src="vendor/supabase.js?v=4"></script>
+<script src="vendor/jspdf.umd.min.js?v=4"></script>
+<script src="vendor/pdf-fonts.js?v=4"></script>
+<script src="js/config.js?v=4"></script>
+<script src="js/db.js?v=4"></script>
+<script src="js/doc.js?v=4"></script>
+<script src="js/pdf.js?v=4"></script>
+<script src="js/ablage.js?v=4"></script>
+<script src="js/app.js?v=4"></script>
 </body>
 </html>
